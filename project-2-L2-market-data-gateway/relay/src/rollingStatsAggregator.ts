@@ -1,13 +1,57 @@
 import type { DataSource } from "./dataSource.js";
 import type { IngestRecord } from "./types.js";
-import { Histogram, snapshotFromCounts, BUCKET_BOUNDARIES, type HistogramSnapshot } from "./histogram.js";
+import {
+  Histogram,
+  snapshotFromCounts,
+  percentileFromCounts,
+  BUCKET_BOUNDARIES,
+  type HistogramSnapshot,
+} from "./histogram.js";
 
 const HOUR_MS = 3_600_000;
 const RETENTION_HOURS = 12;
 
+// How much of the IQR (p75-p25) above the median counts as "elevated" —
+// same 5x multiplier as the exact median+5*MAD threshold used elsewhere
+// (Phase 5/8), applied to a different (but comparably robust) spread
+// estimate. See the module comment below for why MAD itself isn't usable
+// here.
+const JITTER_IQR_MULTIPLIER = 5;
+
+export interface AttributionSplit {
+  tailCount: number;
+  jitterTailCount: number;
+  pipelineTailCount: number;
+}
+
 export interface RollingStats {
   rolling12h: HistogramSnapshot;
+  rolling12hSplit: AttributionSplit;
   currentSession: HistogramSnapshot;
+}
+
+interface Bucket {
+  latency: Histogram;
+  jitter: Histogram;
+  tailCount: number;
+  jitterTailCount: number;
+}
+
+function newBucket(): Bucket {
+  return { latency: new Histogram(), jitter: new Histogram(), tailCount: 0, jitterTailCount: 0 };
+}
+
+function mergeHistograms(histograms: Histogram[]): { counts: Float64Array; total: number; maxNs: number } {
+  const counts = new Float64Array(BUCKET_BOUNDARIES.length);
+  let total = 0;
+  let maxNs = 0;
+  for (const h of histograms) {
+    const c = h.countsView;
+    for (let i = 0; i < c.length; i++) counts[i]! += c[i]!;
+    total += h.count;
+    if (h.maxValueNs > maxNs) maxNs = h.maxValueNs;
+  }
+  return { counts, total, maxNs };
 }
 
 // Maintains a 12-hour rolling percentile view, separate from Broadcaster:
@@ -35,8 +79,24 @@ export interface RollingStats {
 // hour at a time) and a long-idle gap (the gateway not running for >12h)
 // identically — eviction is a pass over whatever's retained, not a
 // step-by-step walk forward.
+//
+// Phase 9: host_jitter vs pipeline attribution split for the 12h window.
+// Unlike Phase 5/8's exact per-event attribution (which needs raw samples
+// and a real median+5*MAD threshold), this class only ever retains bucketed
+// histogram counts — no raw samples, by design, since 12 hours of raw
+// samples would be a lot of memory for a rolling display. So:
+//   - The tail/jitter threshold is derived FROM the bucket histograms
+//     themselves (median + 5*IQR instead of median + 5*MAD — MAD needs raw
+//     deviations, which aren't recoverable from bucket counts, while
+//     percentiles are exactly what this representation already supports).
+//   - Classification uses the MERGED 12h state (matching what's actually
+//     displayed), evaluated BEFORE recording the new sample, so a sample
+//     never influences the very threshold it's being classified against.
+//     This does mean recomputing the merge on every sample rather than
+//     once per broadcast tick — acceptable here since this is an ingest
+//     path in a Node relay, not the C++ trading hot path.
 export class RollingStatsAggregator {
-  private buckets = new Map<number, Histogram>();
+  private buckets = new Map<number, Bucket>();
   private sessionHistogram = new Histogram();
 
   constructor(private readonly source: DataSource) {
@@ -56,18 +116,39 @@ export class RollingStatsAggregator {
     if (!Number.isFinite(latencyNs) || latencyNs < 0) return;
 
     this.sessionHistogram.record(latencyNs);
-    this.recordRolling(latencyNs, Date.now());
+    this.recordRolling(latencyNs, record.host_jitter_ns, Date.now());
   };
 
-  private recordRolling(latencyNs: number, atMs: number): void {
+  private recordRolling(latencyNs: number, hostJitterNs: number, atMs: number): void {
     const bucketId = Math.floor(atMs / HOUR_MS);
     let bucket = this.buckets.get(bucketId);
     if (!bucket) {
-      bucket = new Histogram();
+      bucket = newBucket();
       this.buckets.set(bucketId, bucket);
       this.evictStale(bucketId);
     }
-    bucket.record(latencyNs);
+
+    // Classify against the merged 12h state as it stood BEFORE this sample.
+    const buckets = [...this.buckets.values()];
+    const latencyMerge = mergeHistograms(buckets.map((b) => b.latency));
+    const isTail =
+      latencyMerge.total > 0 &&
+      latencyNs > percentileFromCounts(latencyMerge.counts, latencyMerge.total, 99.9);
+
+    if (isTail) {
+      bucket.tailCount++;
+      const jitterMerge = mergeHistograms(buckets.map((b) => b.jitter));
+      const median = percentileFromCounts(jitterMerge.counts, jitterMerge.total, 50);
+      const p25 = percentileFromCounts(jitterMerge.counts, jitterMerge.total, 25);
+      const p75 = percentileFromCounts(jitterMerge.counts, jitterMerge.total, 75);
+      const threshold = median + JITTER_IQR_MULTIPLIER * (p75 - p25);
+      if (jitterMerge.total > 0 && hostJitterNs > threshold) {
+        bucket.jitterTailCount++;
+      }
+    }
+
+    bucket.latency.record(latencyNs);
+    bucket.jitter.record(hostJitterNs);
   }
 
   private evictStale(currentBucketId: number): void {
@@ -79,21 +160,25 @@ export class RollingStatsAggregator {
   }
 
   private rollingSnapshot(): HistogramSnapshot {
-    const merged = new Float64Array(BUCKET_BOUNDARIES.length);
-    let total = 0;
-    let maxNs = 0;
+    const buckets = [...this.buckets.values()];
+    const { counts, total, maxNs } = mergeHistograms(buckets.map((b) => b.latency));
+    return snapshotFromCounts(counts, total, maxNs);
+  }
+
+  private rollingSplit(): AttributionSplit {
+    let tailCount = 0;
+    let jitterTailCount = 0;
     for (const bucket of this.buckets.values()) {
-      const counts = bucket.countsView;
-      for (let i = 0; i < counts.length; i++) merged[i]! += counts[i]!;
-      total += bucket.count;
-      if (bucket.maxValueNs > maxNs) maxNs = bucket.maxValueNs;
+      tailCount += bucket.tailCount;
+      jitterTailCount += bucket.jitterTailCount;
     }
-    return snapshotFromCounts(merged, total, maxNs);
+    return { tailCount, jitterTailCount, pipelineTailCount: tailCount - jitterTailCount };
   }
 
   snapshot(): RollingStats {
     return {
       rolling12h: this.rollingSnapshot(),
+      rolling12hSplit: this.rollingSplit(),
       currentSession: this.sessionHistogram.snapshot(),
     };
   }

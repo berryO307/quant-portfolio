@@ -80,6 +80,23 @@ export class Histogram {
   }
 }
 
+// Single arbitrary-percentile lookup over bucket counts, same cumulative-
+// count method as snapshotFromCounts below. Used by RollingStatsAggregator
+// to derive an IQR-based robust threshold (median + 5*(p75-p25)) for its
+// host_jitter histogram — MAD needs raw deviations, which aren't
+// recoverable from bucket counts alone, but percentiles are exactly what
+// this bucket representation already supports directly.
+export function percentileFromCounts(counts: ArrayLike<number>, total: number, p: number): number {
+  if (total === 0) return 0;
+  const target = Math.floor((total * p) / 100);
+  let cumulative = 0;
+  for (let i = 0; i < counts.length; i++) {
+    cumulative += counts[i]!;
+    if (cumulative > target) return BUCKET_BOUNDARIES[i]!;
+  }
+  return BUCKET_BOUNDARIES[BUCKET_BOUNDARIES.length - 1]!;
+}
+
 // Percentile lookup shared by Histogram.snapshot() and
 // RollingStatsAggregator's merged-bucket snapshot — same cumulative-count
 // method as LiveHistogram::snapshot() in C++: integer-division targets and

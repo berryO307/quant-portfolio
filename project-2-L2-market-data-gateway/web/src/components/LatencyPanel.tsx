@@ -119,12 +119,12 @@ export function LatencyPanel({ recentSamples }: LatencyPanelProps) {
         )}
       </div>
 
-      <div className="grid flex-1 grid-cols-[2fr_1fr] divide-x divide-[#30363d] overflow-hidden">
-        <div className="flex flex-col overflow-hidden">
+      <div className="grid min-h-0 flex-1 grid-cols-[2fr_1fr] divide-x divide-[#30363d] overflow-hidden">
+        <div className="flex min-h-0 flex-col overflow-hidden">
           <div className="p-2">
             <LatencyChart points={points} refLines={refLines} />
           </div>
-          <div className="flex-1 overflow-hidden border-t border-[#30363d]">
+          <div className="min-h-0 flex-1 overflow-hidden border-t border-[#30363d]">
             <TailEventsFeed tailEvents={tailEvents} selectedKey={selectedKey} onSelect={(e) => setSelectedKey(e.key)} />
           </div>
         </div>

@@ -31,7 +31,7 @@ export function TradesTape({ trades }: TradesTapeProps) {
   }, []);
 
   return (
-    <div className="flex h-full flex-col font-mono text-xs">
+    <div className="flex h-full min-h-0 flex-col font-mono text-xs">
       <div className="grid grid-cols-3 gap-2 border-b border-[#30363d] px-3 py-1 text-[10px] uppercase tracking-wide text-[#8b949e]">
         <span>Price</span>
         <span className="text-right">Size</span>
