@@ -1,20 +1,6 @@
 import type { TailEvent } from "@/lib/types";
-
-const STAGE_COLOR: Record<"parse" | "bookUpdate" | "publish", string> = {
-  parse: "#58a6ff",
-  bookUpdate: "#bc8cff",
-  publish: "#3fb950",
-};
-
-const STAGE_LABEL: Record<"parse" | "bookUpdate" | "publish", string> = {
-  parse: "parse",
-  bookUpdate: "book-update",
-  publish: "publish",
-};
-
-function formatNs(ns: number): string {
-  return ns >= 1000 ? `${(ns / 1000).toFixed(1)}us` : `${ns.toFixed(0)}ns`;
-}
+import { STAGE_COLOR, STAGE_LABEL } from "@/lib/theme";
+import { formatNs } from "@/lib/format";
 
 interface StageBreakdownProps {
   event: TailEvent | null;

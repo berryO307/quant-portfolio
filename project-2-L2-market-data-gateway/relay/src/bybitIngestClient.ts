@@ -39,6 +39,16 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
   private missedPongs = 0;
   private lastCpuGhz = DEFAULT_CPU_GHZ;
 
+  // ingestToken: when set (INGEST_TOKEN env var in production — see
+  // relay/README.md), a connecting client must prove it knows this value in
+  // its hello message before it's treated as the upstream gateway. Without
+  // this, /ingest is open to anyone who finds the URL, who could otherwise
+  // inject arbitrary fake market data to every connected viewer. undefined
+  // (the local-dev default) preserves the original open behavior exactly.
+  constructor(private readonly ingestToken?: string) {
+    super();
+  }
+
   isConnected(): boolean {
     return this.socket !== null && this.socket.readyState === this.socket.OPEN;
   }
@@ -48,22 +58,58 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
   }
 
   handleConnection(ws: WebSocket): void {
-    if (this.socket) {
+    if (!this.ingestToken) {
+      this.promote(ws);
+      ws.on("message", (data) => this.handleMessage(data));
+      ws.on("close", () => this.handleDisconnect(ws));
+      ws.on("error", () => this.handleDisconnect(ws));
+      return;
+    }
+
+    // Token required: this connection is on PROBATION until its first
+    // message proves itself a hello with a matching token — it must not
+    // supersede the current upstream connection before then (see promote()),
+    // or any client could disconnect the real gateway just by opening a
+    // socket, without ever needing to know the token.
+    ws.on("error", () => {}); // swallow — a rejected/never-authenticated socket has no disconnect handler to run
+    ws.once("message", (data) => {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(String(data));
+      } catch {
+        ws.terminate();
+        return;
+      }
+      if (!isHelloMessage(parsed) || parsed.token !== this.ingestToken) {
+        ws.terminate();
+        return;
+      }
+
+      this.promote(ws);
+      this.lastCpuGhz = parsed.cpu_ghz;
+      this.emit("connected", { cpuGhz: this.lastCpuGhz });
+
+      ws.on("message", (data2) => this.handleMessage(data2));
+      // "close" always follows "error" for a ws connection, so relying on
+      // just this is sufficient now that this socket is promoted — the
+      // swallow-error listener registered above stays attached too
+      // (harmless no-op alongside this).
+      ws.on("close", () => this.handleDisconnect(ws));
+    });
+  }
+
+  private promote(ws: WebSocket): void {
+    if (this.socket && this.socket !== ws) {
       // A fresh connection supersedes whatever we had — close the old one
       // rather than letting two upstream feeds coexist and double-deliver.
       this.socket.terminate();
     }
-
     this.socket = ws;
     this.missedPongs = 0;
     this.startHeartbeat(ws);
-
-    ws.on("message", (data) => this.handleMessage(data));
     ws.on("pong", () => {
       this.missedPongs = 0;
     });
-    ws.on("close", () => this.handleDisconnect(ws));
-    ws.on("error", () => this.handleDisconnect(ws));
   }
 
   private handleMessage(data: unknown): void {

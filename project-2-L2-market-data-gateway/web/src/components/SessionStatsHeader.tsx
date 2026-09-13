@@ -1,10 +1,6 @@
 import type { AttributionSplit, HistogramSnapshot } from "@/lib/types";
-
-function formatNs(ns: number): string {
-  if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(1)}ms`;
-  if (ns >= 1000) return `${(ns / 1000).toFixed(1)}us`;
-  return `${ns.toFixed(0)}ns`;
-}
+import { formatNs } from "@/lib/format";
+import { COLOR_ASK, COLOR_JITTER, COLOR_MUTED, COLOR_PARSE, COLOR_TEXT } from "@/lib/theme";
 
 interface SessionStatsHeaderProps {
   currentSession: HistogramSnapshot | null;
@@ -73,8 +69,8 @@ function StatsPanel({
       </div>
       <Stat label="p50" value={snapshot ? formatNs(snapshot.p50Ns) : "--"} />
       <Stat label="p99" value={snapshot ? formatNs(snapshot.p99Ns) : "--"} />
-      <Stat label="p99.9" value={snapshot ? formatNs(snapshot.p999Ns) : "--"} color="#d29922" />
-      <Stat label="max" value={snapshot ? formatNs(snapshot.maxNs) : "--"} color="#f85149" />
+      <Stat label="p99.9" value={snapshot ? formatNs(snapshot.p999Ns) : "--"} color={COLOR_JITTER} />
+      <Stat label="max" value={snapshot ? formatNs(snapshot.maxNs) : "--"} color={COLOR_ASK} />
       <Stat label="n" value={count.toLocaleString()} />
       <div className="ml-auto flex items-center gap-2">
         <span className="text-[10px] uppercase tracking-wide text-[#8b949e]">tail attribution</span>
@@ -83,10 +79,10 @@ function StatsPanel({
         ) : (
           <>
             <div className="flex h-2 w-24 overflow-hidden rounded-sm bg-[#30363d]">
-              <div className="h-full bg-[#8b949e]" style={{ width: `${jitterPct}%` }} title="host jitter" />
+              <div className="h-full" style={{ width: `${jitterPct}%`, backgroundColor: COLOR_MUTED }} title="host jitter" />
               <div
-                className="h-full bg-[#58a6ff]"
-                style={{ width: `${100 - jitterPct}%` }}
+                className="h-full"
+                style={{ width: `${100 - jitterPct}%`, backgroundColor: COLOR_PARSE }}
                 title="pipeline stages"
               />
             </div>
@@ -100,7 +96,7 @@ function StatsPanel({
   );
 }
 
-function Stat({ label, value, color = "#c9d1d9" }: { label: string; value: string; color?: string }) {
+function Stat({ label, value, color = COLOR_TEXT }: { label: string; value: string; color?: string }) {
   return (
     <div className="flex flex-col items-end">
       <span className="text-[10px] uppercase tracking-wide text-[#8b949e]">{label}</span>

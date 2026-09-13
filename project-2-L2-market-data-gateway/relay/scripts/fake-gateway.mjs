@@ -5,16 +5,22 @@
 // writes (see include/export_pipeline.hpp and relay/src/types.ts).
 //
 // Usage: node scripts/fake-gateway.mjs [relayPort=8080]
+// Set INGEST_TOKEN to match the relay's if it's running with one configured.
 import WebSocket from "ws";
 
 const PORT = Number(process.argv[2] ?? process.env.PORT ?? 8080);
 const CPU_GHZ = 3.2;
+const INGEST_TOKEN = process.env.INGEST_TOKEN;
 
 const gw = new WebSocket(`ws://localhost:${PORT}/ingest`);
 
 gw.on("open", () => {
   console.log(`[fake-gateway] connected to ws://localhost:${PORT}/ingest`);
-  gw.send(JSON.stringify({ type: "hello", cpu_ghz: CPU_GHZ }));
+  gw.send(JSON.stringify({
+    type: "hello",
+    cpu_ghz: CPU_GHZ,
+    ...(INGEST_TOKEN ? { token: INGEST_TOKEN } : {}),
+  }));
 
   // Real gateway sends a snapshot ~1/s (see consumer_loop's
   // t_last_export_snapshot timer) — resend periodically, not just once, so

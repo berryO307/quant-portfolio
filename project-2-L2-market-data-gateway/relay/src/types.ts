@@ -42,9 +42,13 @@ export type IngestRecord = SampleRecord | SnapshotRecord | TradeRecord;
 // speak. cpu_ghz is the calibrated TSC frequency (calibrate_tsc_ghz() in
 // rdtsc.hpp) for this session — samples' t_recv/t_parse/t_book/t_publish
 // are raw TSC values, not nanoseconds, and cannot be converted without it.
+// token is optional and only checked when the relay is started with
+// INGEST_TOKEN set (see BybitIngestClient) — local/dev deployments with no
+// token configured ignore this field entirely.
 export interface HelloMessage {
   type: "hello";
   cpu_ghz: number;
+  token?: string;
 }
 
 export function isIngestRecord(value: unknown): value is IngestRecord {

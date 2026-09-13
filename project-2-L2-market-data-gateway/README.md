@@ -113,6 +113,42 @@ This project deliberately **does not** use SBE, Aeron, DPDK, or kernel bypass. E
 
 ---
 
+## Live Observability & Host-Noise Attribution
+
+Everything in this section is a deliberate design choice, not a caveat bolted on after the fact.
+
+### Watch it happen, don't wait for the postmortem
+
+The original capture loop only produced a percentile table after the process exited — useful for a report, useless for noticing a problem *while it's happening*. Rather than treat that as acceptable, the gateway carries a second, cold-path-only pipeline: a lock-free ring buffer drains per-tick latency samples off the hot path into a dedicated export thread, which feeds an in-process geometric-bucket histogram (`include/live_histogram.hpp`) and a terminal progress view that updates p50/p99/p99.9/max **every second while the capture is still running**. The hot path never blocks on any of this — the ring buffer drops and counts on backpressure, exactly like the SPSC queue between the producer and consumer threads. Being able to *watch* a capture's tail behavior develop in real time, rather than reconstruct it after the fact from a CSV, is the point — not an incidental side effect of adding a progress bar.
+
+That same geometric-bucket algorithm is ported three more times — once into the offline Python analysis (`analysis/export_summary.py`), once into the always-on relay's 12-hour rolling aggregator (`relay/src/histogram.ts`), and once into the web viewer's live tail detection (`web/src/lib/tailAttribution.ts`) — specifically so a percentile shown in the terminal during capture, in a downloaded summary afterward, and in the live web dashboard months later all agree with each other. Four implementations of the same small algorithm is a real cost; the alternative (four different approximations that quietly drift apart) is a worse one.
+
+### Distinguishing "our pipeline was slow" from "the host was noisy"
+
+Under WSL2, `isolcpus`-style core isolation only reaches the guest's *virtual* CPUs — it cannot pin anything away from whatever the Windows host itself decides to schedule on the corresponding physical core. That is a real, structural limitation of running a latency-sensitive pipeline under WSL2, and it means some fraction of any observed tail latency is host noise this process has no way to prevent.
+
+The response to that limitation is not to hide it inside an unexplained tail, but to measure it directly. A dedicated jitter canary thread (`include/jitter_canary.hpp`) does nothing but target a fixed ~100µs interval in a loop, pinned to its own core, and record how far its actual wake time overshot the intended one. Because plain `sleep_for` at that resolution turned out to be a near-no-op on Windows (confirmed empirically, not assumed), the canary uses a hybrid sleep-then-spin approach to get a real, sub-millisecond-resolution reading rather than a number that never varies. That reading — `host_jitter_ns` — travels alongside every latency sample all the way to the web viewer.
+
+Every tail-latency event (a sample above the session's own p99.9) is then attributed to one of two buckets: **host_jitter**, if that sample's own jitter reading is a statistical outlier relative to the session's baseline (median + 5×MAD, or an IQR-based approximation where only bucketed histograms are available — see `relay/src/rollingStatsAggregator.ts`), or a **specific pipeline stage** (parse / book-update / publish), if not. The web viewer's `TailEventsFeed` and `StageBreakdown` panels render these two cases differently on purpose: a host_jitter attribution shows up muted/grey with the canary delta, not a stage comparison, because showing "book-update was the outlier" for an event actually caused by host preemption would be actively misleading. A colored, stage-attributed event is a bug (or at least a cost) inside this codebase; a grey, jitter-attributed event is the platform doing something outside this process's control. Telling those apart, per-event, rather than reporting one blended tail number, is the actual deliverable of this half of the system.
+
+### The full observability stack
+
+```
+C++ gateway (per-session, ephemeral)
+  │  cold-path export (lock-free ring buffer, never blocks the hot path)
+  ▼
+Relay (Node/TypeScript, the only 24/7 piece)
+  │  12-hour rolling stats, WebSocket fan-out to any number of viewers
+  ▼
+Web viewer (Next.js, deployed on Vercel)
+     live L2 ladder + depth curve · trades tape · latency panel with
+     tail-event drill-down · loads historical summary.json files too
+```
+
+The relay is intentionally the only piece that runs continuously — the gateway is a capture session, not a service, and the web viewer is stateless (it reconnects to the relay with the same backoff the gateway itself uses against Bybit). See [`relay/README.md`](relay/README.md) and [`web/README.md`](web/README.md) for how each piece is actually deployed.
+
+---
+
 ## Build & Run
 
 ### Prerequisites
@@ -164,21 +200,33 @@ project-2-L2-market-data-gateway/
 │   ├── spsc_ring_buffer.hpp Lock-free transport (the central nervous system)
 │   ├── order_book.hpp       PriceLadder + hierarchical bitboard
 │   ├── mmap_writer.hpp      Zero-copy persistence
-│   ├── rdtsc.hpp            Hardware timing
+│   ├── rdtsc.hpp            Hardware timing + per-stage LatencyStore
 │   ├── thread_utils.hpp     Core pinning, real-time priority
 │   ├── AsyncLogger.hpp      Wait-free logging off the hot path
 │   ├── parse_utils.hpp      ALU-only ASCII-to-int
 │   ├── types.hpp            64B-aligned NormalizedTick, fixed-point scales
+│   ├── export_pipeline.hpp  Cold-path SPSC ring buffer → gzip NDJSON export
+│   ├── live_histogram.hpp   Geometric-bucket histogram (live progress view)
+│   ├── jitter_canary.hpp    Dedicated host-noise measurement thread
 │   └── thread_queue.hpp     (Legacy mutex queue — kept as reference)
 ├── src/                     C++ implementations
 ├── analysis/                Python latency-regime analysis
 │   ├── notebooks/
 │   │   └── latency_analysis.ipynb   ← analytical walkthrough
 │   ├── output/                       ← rendered figures
+│   ├── export_summary.py             ← offline tail-attribution + Altair charts
 │   ├── latency_analysis.py
 │   ├── metrics.py
 │   ├── plots.py
 │   └── ...
+├── relay/                   Node/TypeScript relay — the only 24/7 piece
+│   ├── src/                 BybitIngestClient, Broadcaster, ConnectionManager,
+│   │                        RollingStatsAggregator, HealthMonitor
+│   └── README.md            ← Oracle Cloud Free Tier deployment guide
+├── web/                     Next.js live viewer, deployed on Vercel
+│   ├── src/components/      OrderBookLadder, DepthCurve, TradesTape,
+│   │                        LatencyPanel, SessionStatsHeader, ...
+│   └── README.md            ← Vercel deployment guide
 ├── data/                    Sample captures (latency.csv, ticks.bin)
 ├── notes/
 │   └── Engineering_Notes.md ← deep technical writeup, start here for depth
@@ -201,6 +249,8 @@ project-2-L2-market-data-gateway/
 ## Status & Roadmap
 
 This is a working portfolio system, not an internal tooling product. Live captures run on a low-cost VPS to accumulate proprietary tick data; the analysis layer feeds off those captures.
+
+**Shipped (v1.0.0):** per-stage rdtscp timestamps · cold-path export pipeline · live terminal progress view · jitter canary + host-noise attribution · offline Altair analysis · always-on relay with 12-hour rolling stats · web viewer (live L2 ladder, depth curve, trades tape) · latency panel with tail-event drill-down · Vercel + Oracle Cloud deployment.
 
 **Next up:**
 

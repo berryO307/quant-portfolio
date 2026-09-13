@@ -5,9 +5,7 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { computeDepthLevels } from "@/lib/orderBook";
 import { toPrice, toQty, type SnapshotRecord } from "@/lib/types";
-
-const BID_COLOR = "#3fb950";
-const ASK_COLOR = "#f85149";
+import { COLOR_ASK, COLOR_BID, UPLOT_AXIS_STYLE } from "@/lib/theme";
 
 interface DepthCurveProps {
   snapshot: SnapshotRecord | null;
@@ -79,29 +77,21 @@ export function DepthCurve({ snapshot, hoveredPrice, onHoverPrice, height = 260 
         {},
         {
           label: "bids",
-          stroke: BID_COLOR,
-          fill: `${BID_COLOR}22`,
+          stroke: COLOR_BID,
+          fill: `${COLOR_BID}22`,
           paths: uPlot.paths.stepped!({ align: 1 }),
           points: { show: false },
         },
         {
           label: "asks",
-          stroke: ASK_COLOR,
-          fill: `${ASK_COLOR}22`,
+          stroke: COLOR_ASK,
+          fill: `${COLOR_ASK}22`,
           paths: uPlot.paths.stepped!({ align: 1 }),
           points: { show: false },
         },
       ],
       scales: { x: { time: false } },
-      axes: [
-        { stroke: "#8b949e", grid: { stroke: "#21262d", width: 1 }, ticks: { stroke: "#30363d" } },
-        {
-          stroke: "#8b949e",
-          grid: { stroke: "#21262d", width: 1 },
-          ticks: { stroke: "#30363d" },
-          label: "cumulative size",
-        },
-      ],
+      axes: [UPLOT_AXIS_STYLE, { ...UPLOT_AXIS_STYLE, label: "cumulative size" }],
       legend: { show: false },
       cursor: { x: true, y: false, drag: { x: false, y: false } },
       hooks: {

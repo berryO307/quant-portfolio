@@ -4,17 +4,7 @@ import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { Attribution } from "@/lib/types";
-
-// Same palette introduced in analysis/export_summary.py's Altair theme —
-// kept identical here so a chart looks the same whether it's the Phase 5
-// offline HTML or this live interactive one.
-const ATTRIBUTION_COLORS: Record<Attribution | "normal", string> = {
-  normal: "#8b949e",
-  host_jitter: "#d29922",
-  parse: "#58a6ff",
-  "book-update": "#bc8cff",
-  publish: "#3fb950",
-};
+import { ATTRIBUTION_COLORS, COLOR_ASK, COLOR_JITTER, COLOR_MUTED, UPLOT_AXIS_STYLE } from "@/lib/theme";
 
 const ATTRIBUTION_ORDER: (Attribution | "normal")[] = ["normal", "parse", "book-update", "publish", "host_jitter"];
 
@@ -71,9 +61,9 @@ export function LatencyChart({ points, refLines, height = 260 }: LatencyChartPro
         paths: () => null, // scatter only — no connecting line
         points: { show: true, size: 5, fill: ATTRIBUTION_COLORS[cat], stroke: ATTRIBUTION_COLORS[cat] },
       })),
-      { label: "p50", stroke: "#8b949e", width: 1, dash: [4, 3], points: { show: false } },
-      { label: "p99", stroke: "#d29922", width: 1, dash: [4, 3], points: { show: false } },
-      { label: "p99.9", stroke: "#f85149", width: 1, dash: [4, 3], points: { show: false } },
+      { label: "p50", stroke: COLOR_MUTED, width: 1, dash: [4, 3], points: { show: false } },
+      { label: "p99", stroke: COLOR_JITTER, width: 1, dash: [4, 3], points: { show: false } },
+      { label: "p99.9", stroke: COLOR_ASK, width: 1, dash: [4, 3], points: { show: false } },
     ];
 
     const opts: uPlot.Options = {
@@ -81,15 +71,7 @@ export function LatencyChart({ points, refLines, height = 260 }: LatencyChartPro
       height,
       series,
       scales: { x: { time: false } },
-      axes: [
-        { stroke: "#8b949e", grid: { stroke: "#21262d", width: 1 }, ticks: { stroke: "#30363d" } },
-        {
-          stroke: "#8b949e",
-          grid: { stroke: "#21262d", width: 1 },
-          ticks: { stroke: "#30363d" },
-          label: "latency (ns)",
-        },
-      ],
+      axes: [UPLOT_AXIS_STYLE, { ...UPLOT_AXIS_STYLE, label: "latency (ns)" }],
       legend: { show: true },
       cursor: { drag: { x: false, y: false } },
     };
