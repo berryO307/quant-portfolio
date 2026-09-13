@@ -46,9 +46,20 @@ export interface HistogramSnapshot {
   p999Ns: number;
 }
 
+// Mirrors relay/src/rollingStatsAggregator.ts's AttributionSplit — an
+// IQR-based approximation of the exact median+5*MAD attribution used
+// elsewhere (Phase 5/8), since the relay only retains bucketed histogram
+// counts for its 12h window, not raw samples MAD needs.
+export interface AttributionSplit {
+  tailCount: number;
+  jitterTailCount: number;
+  pipelineTailCount: number;
+}
+
 export interface StatsMessage {
   type: "stats";
   rolling12h: HistogramSnapshot;
+  rolling12hSplit: AttributionSplit;
   currentSession: HistogramSnapshot;
 }
 

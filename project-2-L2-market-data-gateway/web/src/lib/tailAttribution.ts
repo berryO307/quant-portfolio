@@ -1,4 +1,4 @@
-import type { Attribution, HistoricalSummary, LiveSample, TailEvent } from "./types";
+import type { Attribution, AttributionSplit, HistoricalSummary, LiveSample, TailEvent } from "./types";
 
 // Fourth port of the same tail-attribution logic, after C++ (nowhere —
 // this classification only ever existed in Python/relay), Python
@@ -116,4 +116,18 @@ export function tailEventsFromHistorical(summary: HistoricalSummary): TailEvent[
       stageNs: { parse: e.stage_ns.parse, bookUpdate: e.stage_ns.book_update, publish: e.stage_ns.publish },
     }))
     .reverse(); // summary.json lists tail_events in session order; newest first here too
+}
+
+// SessionStatsHeader's current-session jitter/pipeline split, computed
+// client-side from the same tail events LatencyPanel already derives —
+// no relay-side work needed here, unlike the 12h window (which has no raw
+// samples to compute an exact split from at all — see
+// relay/src/rollingStatsAggregator.ts).
+export function attributionSplit(tailEvents: TailEvent[]): AttributionSplit {
+  const jitterTailCount = tailEvents.filter((e) => e.attribution === "host_jitter").length;
+  return {
+    tailCount: tailEvents.length,
+    jitterTailCount,
+    pipelineTailCount: tailEvents.length - jitterTailCount,
+  };
 }
