@@ -9,6 +9,7 @@
 #include "export_pipeline.hpp"
 #include "live_histogram.hpp"
 #include "terminal_progress.hpp"
+#include "jitter_canary.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -44,7 +45,8 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
                         LatencyStore& latency,
                         MmapWriter& mmap_writer,
                         std::atomic<uint64_t>& last_u,
-                        ColdPathExporter& exporter) {
+                        ColdPathExporter& exporter,
+                        const JitterCanary& canary) {
 
     // NOTE: OrderBook is heap-allocated and owned exclusively by this consumer thread
     // via unique_ptr — no shared mutable state, no locks required.
@@ -316,7 +318,7 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
             sample_rec.type   = ExportRecordType::SAMPLE;
             sample_rec.sample = ExportSample{
                 tick.t1_tsc, tick.t2_tsc, t4, t5,
-                queue_depth_at_pop, sample_side,
+                queue_depth_at_pop, canary.jitter_ns(), sample_side,
                 static_cast<uint8_t>(current_cpu_core())
             };
             exporter.push(sample_rec);
@@ -384,6 +386,7 @@ int main(int argc, char* argv[]) {
     // Revised Core Assignments for mechanical sympathy
     static constexpr int CORE_PRODUCER = 2; // Was CORE_WS_DEPTH/TRADE
     static constexpr int CORE_CONSUMER = 3; // Keep adjacent to Core 2
+    static constexpr int CORE_CANARY   = 4; // Phase 4 jitter canary — must not share a core with 2/3
 
     // Default: run for 30 minutes unless overridden by argv[1]
     int run_minutes = 30;
@@ -435,6 +438,13 @@ int main(int argc, char* argv[]) {
     ColdPathExporter exporter(*export_ring, host_ghz, live_histogram);
     TerminalProgressView progress_view(live_histogram);
 
+    // Jitter canary: a thread that does nothing but sleep 100us in a loop and
+    // measure how far its actual wake time missed the intended one, pinned to
+    // its own core (CORE_CANARY) so it never shares a core with the hot-path
+    // threads. Its most recent reading is attached to export samples below as
+    // host_jitter_ns context — see jitter_canary.hpp for the WSL2 caveat.
+    JitterCanary jitter_canary(CORE_CANARY, host_ghz);
+
     // Spawn threads. Pinning happens inside each lambda via pin_thread_self()
     // rather than externally via pin_thread() after spawn.
     // WHY internal pinning on Windows:
@@ -484,7 +494,7 @@ int main(int argc, char* argv[]) {
         // Self-configure for high performance
         configure_self_high_performance(CORE_CONSUMER, "consumer_thread");
         try {
-            consumer_loop(depth_queue, trade_queue, g_stop, latency_, mmap_writer, last_u, exporter);
+            consumer_loop(depth_queue, trade_queue, g_stop, latency_, mmap_writer, last_u, exporter, jitter_canary);
         } catch (const std::exception& e) {
             std::cerr << "[consumer_thread] fatal: " << e.what() << "\n";
             g_stop.store(true);
