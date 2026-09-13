@@ -22,6 +22,12 @@ const health = new HealthMonitor(ingestClient);
 void broadcaster; // constructed for its side effect (subscribing to the source); no further use here
 
 const httpServer = createServer((req, res) => {
+  // The browser client (web/) polls /health and /stats directly from a
+  // different origin (its own Vercel domain vs. wherever this relay is
+  // hosted) — CORS must be open for that GET to succeed at all. Read-only,
+  // unauthenticated endpoints, so allowing any origin is fine here.
+  res.setHeader("Access-Control-Allow-Origin", "*");
+
   if (req.url === "/health") {
     health.handle(req, res);
     return;
