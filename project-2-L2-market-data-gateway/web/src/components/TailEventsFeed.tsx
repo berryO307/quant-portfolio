@@ -1,20 +1,12 @@
-import type { Attribution, TailEvent } from "@/lib/types";
-
-// host_jitter is deliberately muted/grey here — not "our" pipeline's fault,
-// so it reads as less actionable than a colored stage attribution. Each
-// pipeline stage gets its own color instead, matching LatencyChart/the
-// Phase 5 Altair palette, so an operator can visually scan for "is this
-// tail event even worth investigating in our own code".
-const ATTRIBUTION_STYLE: Record<Attribution, { color: string; label: string }> = {
-  host_jitter: { color: "#8b949e", label: "host jitter" },
-  parse: { color: "#58a6ff", label: "parse" },
-  "book-update": { color: "#bc8cff", label: "book-update" },
-  publish: { color: "#3fb950", label: "publish" },
-};
-
-function formatNs(ns: number): string {
-  return ns >= 1000 ? `${(ns / 1000).toFixed(1)}us` : `${ns.toFixed(0)}ns`;
-}
+import type { TailEvent } from "@/lib/types";
+// host_jitter is deliberately muted/grey here (the _MUTED_JITTER variant) —
+// not "our" pipeline's fault, so it reads as less actionable than a colored
+// stage attribution. Each pipeline stage gets its own color instead,
+// matching LatencyChart/the Phase 5 Altair palette, so an operator can
+// visually scan for "is this tail event even worth investigating in our own
+// code".
+import { ATTRIBUTION_COLORS_MUTED_JITTER, ATTRIBUTION_LABEL, COLOR_ASK } from "@/lib/theme";
+import { formatNs } from "@/lib/format";
 
 interface TailEventsFeedProps {
   tailEvents: TailEvent[]; // newest first
@@ -39,7 +31,6 @@ export function TailEventsFeed({ tailEvents, selectedKey, onSelect }: TailEvents
         <span className="text-right">Attribution</span>
       </div>
       {tailEvents.map((event) => {
-        const style = ATTRIBUTION_STYLE[event.attribution];
         const selected = event.key === selectedKey;
         return (
           <button
@@ -51,9 +42,11 @@ export function TailEventsFeed({ tailEvents, selectedKey, onSelect }: TailEvents
             }`}
           >
             <span className="truncate text-[#c9d1d9]">{event.tRecvTsc}</span>
-            <span className="text-right text-[#f85149]">{formatNs(event.latencyNs)}</span>
-            <span className="text-right" style={{ color: style.color }}>
-              {style.label}
+            <span className="text-right" style={{ color: COLOR_ASK }}>
+              {formatNs(event.latencyNs)}
+            </span>
+            <span className="text-right" style={{ color: ATTRIBUTION_COLORS_MUTED_JITTER[event.attribution] }}>
+              {ATTRIBUTION_LABEL[event.attribution]}
             </span>
           </button>
         );

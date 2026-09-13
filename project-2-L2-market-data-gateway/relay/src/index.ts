@@ -11,11 +11,15 @@ import { HealthMonitor } from "./healthMonitor.js";
 // DataSource interface (see dataSource.ts), so swapping the upstream feed
 // only means changing what gets constructed here.
 
+// See relay/README.md for the full deployment env var reference.
 const PORT = Number(process.env.PORT ?? 8080);
+const CORS_ORIGIN = process.env.CORS_ORIGIN ?? "*";
+const MAX_CLIENTS = Number(process.env.MAX_CLIENTS ?? 500);
+const INGEST_TOKEN = process.env.INGEST_TOKEN; // undefined = open /ingest, matches local-dev default
 const STATS_BROADCAST_INTERVAL_MS = 1_000; // same cadence as the Phase 3 terminal progress view
 
-const ingestClient = new BybitIngestClient();
-const connections = new ConnectionManager();
+const ingestClient = new BybitIngestClient(INGEST_TOKEN);
+const connections = new ConnectionManager(MAX_CLIENTS);
 const broadcaster = new Broadcaster(ingestClient, connections);
 const rollingStats = new RollingStatsAggregator(ingestClient);
 const health = new HealthMonitor(ingestClient);
@@ -24,9 +28,10 @@ void broadcaster; // constructed for its side effect (subscribing to the source)
 const httpServer = createServer((req, res) => {
   // The browser client (web/) polls /health and /stats directly from a
   // different origin (its own Vercel domain vs. wherever this relay is
-  // hosted) — CORS must be open for that GET to succeed at all. Read-only,
-  // unauthenticated endpoints, so allowing any origin is fine here.
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  // hosted) — CORS must be open for that GET to succeed at all. Defaults to
+  // "*" for local dev; set CORS_ORIGIN to the deployed web app's exact
+  // origin in production to stop other sites from being able to read it.
+  res.setHeader("Access-Control-Allow-Origin", CORS_ORIGIN);
 
   if (req.url === "/health") {
     health.handle(req, res);

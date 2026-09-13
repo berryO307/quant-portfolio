@@ -1,36 +1,34 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# L2 Gateway Web Viewer
 
-## Getting Started
+Next.js app (App Router, TypeScript, Tailwind) showing the live L2 order book ladder, depth curve, trades tape, and latency panel with tail-event drill-down. Connects **directly from the browser** to the [relay](../relay/README.md)'s WebSocket feed and `/health` endpoint — this app has no backend of its own and needs none, since the relay is the always-on piece (see the root [README](../README.md#the-full-observability-stack)).
 
-First, run the development server:
+## Local development
 
 ```bash
+npm install
+cp .env.example .env.local   # point at your local relay (see below), or leave the defaults
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. To see live data, also run the relay and its fake-gateway dev utility (see [`relay/README.md`](../relay/README.md#local-development)) — the web app works against any relay instance, local or deployed.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment variables
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Both are read at build/runtime by the browser bundle, so they must be prefixed `NEXT_PUBLIC_` and are **not secret** — anyone can read them from the page source. Don't put the relay's `INGEST_TOKEN` here; that's a gateway→relay secret, this app never needs it.
 
-## Learn More
+| Variable | Default (local dev) | Description |
+| --- | --- | --- |
+| `NEXT_PUBLIC_RELAY_WS_URL` | `ws://localhost:8080/live` | The relay's browser-facing WebSocket endpoint. Use `wss://` for a production relay behind TLS. |
+| `NEXT_PUBLIC_RELAY_HEALTH_URL` | `http://localhost:8080/health` | The relay's health endpoint, polled every 5s by `FeedStatusBanner`. |
 
-To learn more about Next.js, take a look at the following resources:
+## Deploying to Vercel
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+1. Import this repository into Vercel, setting **Root Directory** to `project-2-L2-market-data-gateway/web` (this is a monorepo — Vercel needs to know the Next.js app isn't at the repo root).
+2. Vercel auto-detects the Next.js framework preset; no build command changes needed.
+3. In the project's Environment Variables settings, set `NEXT_PUBLIC_RELAY_WS_URL` and `NEXT_PUBLIC_RELAY_HEALTH_URL` to your deployed relay's public address (e.g. `wss://relay.example.com/live` and `https://relay.example.com/health` — see [`relay/README.md`](../relay/README.md) for standing that up on Oracle Cloud Free Tier).
+4. On the relay side, set `CORS_ORIGIN` to this Vercel deployment's exact origin (e.g. `https://your-app.vercel.app`) once you know it, rather than leaving the relay's default `*` open to any site.
+5. Deploy. No `vercel.json` is required — the defaults (Node.js runtime, automatic HTTPS, preview deployments per branch) are exactly what this static/client-only app needs.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## What this app does *not* do
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+No replay fallback, no server-side data fetching, no API routes. If the relay is unreachable, `FeedStatusBanner` is the only thing that tells you — the rest of the dashboard just shows its own empty/waiting states, deliberately, rather than pretending to have data it doesn't.

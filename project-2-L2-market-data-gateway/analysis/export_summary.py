@@ -224,7 +224,7 @@ def build_summary(session_path: Path, samples: pd.DataFrame, percentiles: dict,
 # palette meant to be swapped for the real one once the web app exists.
 
 ATTRIBUTION_COLORS = {
-    "normal":      "#484f58",
+    "normal":      "#8b949e",  # matches web/src/lib/theme.ts's COLOR_MUTED exactly
     "host_jitter": "#d29922",
     "parse":       "#58a6ff",
     "book-update": "#bc8cff",
