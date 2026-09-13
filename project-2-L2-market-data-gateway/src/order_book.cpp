@@ -103,6 +103,53 @@ int64_t PriceLadder::get_best_bid() const {
     return 0; // Book is empty
 }
 
+// Cold path (periodic export snapshots only, ~1/s): walks the two-level bitmap
+// from the best price outward, collecting up to max_n occupied levels. Same
+// bit-tricks as get_best_bid/get_best_ask, but clears each found bit from a
+// local copy of the word so the scan can continue past the first hit instead
+// of returning immediately. Does not mutate the ladder or the best-price cache.
+int PriceLadder::top_n(PriceLevel* out, int max_n, bool from_high) const {
+    int count = 0;
+
+    if (from_high) {
+        for (int64_t w = static_cast<int64_t>(L2.size()) - 1; w >= 0 && count < max_n; --w) {
+            uint64_t l2_word = L2[w];
+            while (l2_word != 0 && count < max_n) {
+                int l2_bit    = 63 - __builtin_clzll(l2_word);
+                int64_t l1_chunk = (w * 64) + l2_bit;
+                uint64_t l1_word = L1[l1_chunk];
+
+                while (l1_word != 0 && count < max_n) {
+                    int bit_pos = 63 - __builtin_clzll(l1_word);
+                    int64_t idx = (l1_chunk * 64) + bit_pos;
+                    out[count++] = PriceLevel{ base_price + idx * TICK_STEP, qtys[idx] };
+                    l1_word &= ~(uint64_t(1) << bit_pos);
+                }
+                l2_word &= ~(uint64_t(1) << l2_bit);
+            }
+        }
+    } else {
+        for (int64_t w = 0; w < static_cast<int64_t>(L2.size()) && count < max_n; ++w) {
+            uint64_t l2_word = L2[w];
+            while (l2_word != 0 && count < max_n) {
+                int l2_bit    = __builtin_ctzll(l2_word);
+                int64_t l1_chunk = (w * 64) + l2_bit;
+                uint64_t l1_word = L1[l1_chunk];
+
+                while (l1_word != 0 && count < max_n) {
+                    int bit_pos = __builtin_ctzll(l1_word);
+                    int64_t idx = (l1_chunk * 64) + bit_pos;
+                    out[count++] = PriceLevel{ base_price + idx * TICK_STEP, qtys[idx] };
+                    l1_word &= ~(uint64_t(1) << bit_pos);
+                }
+                l2_word &= ~(uint64_t(1) << l2_bit);
+            }
+        }
+    }
+
+    return count;
+}
+
 // OrderBook
 // Cold path; full state reset before applying a new snapshot; clear() here is a memset, not N heap frees
 void OrderBook::seed(const OrderBookSnapshot& snap) {

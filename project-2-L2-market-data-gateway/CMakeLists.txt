@@ -20,6 +20,7 @@ list(PREPEND CMAKE_PREFIX_PATH "C:/msys64/mingw64")
 find_package(Boost REQUIRED COMPONENTS system thread)
 find_package(simdjson REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
 
 # ── Target ────────────────────────────────────────────────────────────────────
 add_executable(L2DataCapture
@@ -37,6 +38,7 @@ target_link_libraries(L2DataCapture PRIVATE
     simdjson::simdjson
     OpenSSL::SSL
     OpenSSL::Crypto
+    ZLIB::ZLIB
     ws2_32
     mswsock
 )
