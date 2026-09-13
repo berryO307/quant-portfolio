@@ -1,6 +1,8 @@
 #pragma once
 #include "spsc_ring_buffer.hpp"
 #include "types.hpp"   // PriceLevel
+#include "rdtsc.hpp"   // tsc_to_ns
+#include "live_histogram.hpp"
 #include <zlib.h>
 #include <atomic>
 #include <thread>
@@ -111,8 +113,14 @@ using ExportRingBuffer = SpscRingBuffer<ExportRecord, EXPORT_RING_CAPACITY>;
 // (it's also referenced by the producer side), not by this class.
 class ColdPathExporter {
 public:
-    explicit ColdPathExporter(ExportRingBuffer& ring, const std::string& out_dir = "data/export")
-        : ring_(ring), running_(true) {
+    // cpu_ghz: calibrated TSC frequency (see calibrate_tsc_ghz()), used only to
+    // convert each sample's t_recv->t_publish TSC delta into ns for the live
+    // histogram — the NDJSON output itself still stores raw TSC values.
+    // histogram: owned by the caller (see main.cpp), not by this class, so a
+    // future consumer can hold the same reference without touching this file.
+    ColdPathExporter(ExportRingBuffer& ring, double cpu_ghz, LiveHistogram& histogram,
+                      const std::string& out_dir = "data/export")
+        : ring_(ring), cpu_ghz_(cpu_ghz), histogram_(histogram), running_(true) {
         std::filesystem::create_directories(out_dir);
 
         auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -154,6 +162,11 @@ private:
         switch (rec.type) {
         case ExportRecordType::SAMPLE: {
             const auto& s = rec.sample;
+
+            // Live histogram update — this IS the drain thread, per the Phase 3
+            // requirement that this never runs on the trading/gateway thread.
+            histogram_.record(tsc_to_ns(s.t_publish - s.t_recv, cpu_ghz_));
+
             gzprintf(gz_,
                 "{\"type\":\"sample\",\"t_recv\":%llu,\"t_parse\":%llu,\"t_book\":%llu,"
                 "\"t_publish\":%llu,\"queue_depth\":%u,\"side\":\"%s\",\"cpu_core\":%u}\n",
@@ -228,6 +241,8 @@ private:
     }
 
     ExportRingBuffer&    ring_;
+    double               cpu_ghz_;
+    LiveHistogram&       histogram_;
     std::string          path_;
     gzFile               gz_ = nullptr;
     std::atomic<bool>    running_;
