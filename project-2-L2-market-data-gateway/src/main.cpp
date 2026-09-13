@@ -6,6 +6,7 @@
 #include "mmap_writer.hpp"
 #include "rdtsc.hpp"
 #include "thread_utils.hpp"
+#include "export_pipeline.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -40,7 +41,8 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
                         std::atomic<bool>& stop,
                         LatencyStore& latency,
                         MmapWriter& mmap_writer,
-                        std::atomic<uint64_t>& last_u) {
+                        std::atomic<uint64_t>& last_u,
+                        ColdPathExporter& exporter) {
 
     // NOTE: OrderBook is heap-allocated and owned exclusively by this consumer thread
     // via unique_ptr — no shared mutable state, no locks required.
@@ -66,6 +68,7 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
 
     auto t_start    = std::chrono::steady_clock::now();
     auto t_last_log = t_start;
+    auto t_last_export_snapshot = t_start;
 
     RESYNC:
     state         = State::Init;
@@ -148,10 +151,13 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
         // cpu_set_t, busy-spinning on pop() instead.
         Tick tick;
         bool got_tick = false;
+        uint32_t queue_depth_at_pop = 0;   // source queue size, sampled right at pop — export context only
         if (depth_queue.pop(tick)) {
             got_tick = true;
+            queue_depth_at_pop = static_cast<uint32_t>(depth_queue.size());
         } else if (trade_queue.pop(tick)) {
             got_tick = true;
+            queue_depth_at_pop = static_cast<uint32_t>(trade_queue.size());
        }
         if (!got_tick) {
             std::this_thread::sleep_for(std::chrono::microseconds(100));
@@ -165,6 +171,11 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
         ++total_ticks;
 
         NormalizedTick out{};   // zero-initialise all fields
+        SampleSide sample_side = SampleSide::NONE;   // export context only, set below
+        // NOTE: NormalizedTick::stream_type is a SIGNED 1-bit field, so it can only
+        // ever hold 0 or -1 — assigning 1 (below, pre-existing) silently stores -1.
+        // Don't compare against it; track trade-ness separately for export purposes.
+        bool is_trade_tick = false;
 
         // Fields common to both stream types
         out.t2_tsc   = tick.t2_tsc;
@@ -173,6 +184,13 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
 
         // Using get_if to guarantee zero exception overhead and a single tag check
         if (auto* depth = std::get_if<DepthUpdate>(&tick.data)) {
+            // Export context: which side(s) this depth message touched.
+            bool has_bids = !depth->bids.empty();
+            bool has_asks = !depth->asks.empty();
+            sample_side = (has_bids && has_asks) ? SampleSide::BOTH
+                        : has_bids               ? SampleSide::BID
+                        : has_asks               ? SampleSide::ASK
+                        :                          SampleSide::NONE;
 
             if (state == State::Syncing) {
                 // Stale: discard events older than snapshot (strict less-than per Binance spec)
@@ -256,6 +274,11 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
             out.is_buyer_maker = tr->is_buyer_maker ? 1 : 0;
             out.stream_type    = 1;
 
+            // Export context: is_buyer_maker==true means the seller was the taker,
+            // i.e. the trade printed against the bid.
+            sample_side  = tr->is_buyer_maker ? SampleSide::BID : SampleSide::ASK;
+            is_trade_tick = true;
+
         } else {
             // Defensive programming: Catch unexpected variant types without throwing
             std::cerr << "[consumer] Warning: Unknown tick type received.\n";
@@ -268,12 +291,50 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
         uint64_t t4 = rdtscp();
         latency.book_cycles.emplace_back(t4 - tick.t2_tsc);
 
+        // Cold-path trade print: pushed into the export ring buffer, not written
+        // synchronously here. Never blocks — see ColdPathExporter::push().
+        if (is_trade_tick) {
+            ExportRecord trade_rec{};
+            trade_rec.type  = ExportRecordType::TRADE;
+            trade_rec.trade = ExportTrade{ t4, out.price, out.qty, out.agg_trade_id, sample_side };
+            exporter.push(trade_rec);
+        }
+
         // Single memcpy into mmap — replaces the entire slow csv << string formatting chain
         mmap_writer.write(out);
 
         // Stage 4: publish complete (mmap write done).
         uint64_t t5 = rdtscp();
         latency.publish_cycles.emplace_back(t5 - t4);
+
+        // Cold-path per-tick sample: the four stage timestamps plus context.
+        // Pushed here (after t5), never blocks — see ColdPathExporter::push().
+        {
+            ExportRecord sample_rec{};
+            sample_rec.type   = ExportRecordType::SAMPLE;
+            sample_rec.sample = ExportSample{
+                tick.t1_tsc, tick.t2_tsc, t4, t5,
+                queue_depth_at_pop, sample_side,
+                static_cast<uint8_t>(current_cpu_core())
+            };
+            exporter.push(sample_rec);
+        }
+
+        // Periodic L2 snapshot export (~1/s). Read-only against `book`, which this
+        // thread already owns exclusively — no locking needed. Correlated with the
+        // per-tick samples above via the same rdtscp clock.
+        auto snap_now = std::chrono::steady_clock::now();
+        if (snap_now - t_last_export_snapshot >= std::chrono::seconds(1)) {
+            t_last_export_snapshot = snap_now;
+
+            ExportRecord snap_rec{};
+            snap_rec.type = ExportRecordType::SNAPSHOT;
+            ExportSnapshot& snap = snap_rec.snapshot;
+            snap.tsc       = rdtscp();
+            snap.bid_count = book.top_bids(snap.bids, static_cast<int>(EXPORT_SNAPSHOT_DEPTH));
+            snap.ask_count = book.top_asks(snap.asks, static_cast<int>(EXPORT_SNAPSHOT_DEPTH));
+            exporter.push(snap_rec);
+        }
 
         // Console heartbeat every 10 s
         auto now = std::chrono::steady_clock::now();
@@ -342,6 +403,14 @@ int main(int argc, char* argv[]) {
     // Initiate the latency store here so it exists before the thread starts
     LatencyStore latency_;
 
+    // Cold-path export ring buffer: ~340 bytes/slot * 65536 slots =~ 22MB —
+    // too big for a thread stack (same reasoning as OrderBook below), so it's
+    // heap-allocated once here and never touched again except through push()/pop().
+    // Single producer (consumer_thread, below) / single consumer (ColdPathExporter's
+    // own drain thread) — SPSC contract, same as the Tick queues above.
+    auto export_ring = std::make_unique<ExportRingBuffer>();
+    ColdPathExporter exporter(*export_ring);
+
     // Instantiate the MmapWriter.
     // We need to give it a binary file path (not .csv) and a maximum capacity.
     // Let's pre-allocate space for 10 million ticks (adjust as needed for run time).
@@ -405,7 +474,7 @@ int main(int argc, char* argv[]) {
         // Self-configure for high performance
         configure_self_high_performance(CORE_CONSUMER, "consumer_thread");
         try {
-            consumer_loop(depth_queue, trade_queue, g_stop, latency_, mmap_writer, last_u);
+            consumer_loop(depth_queue, trade_queue, g_stop, latency_, mmap_writer, last_u, exporter);
         } catch (const std::exception& e) {
             std::cerr << "[consumer_thread] fatal: " << e.what() << "\n";
             g_stop.store(true);

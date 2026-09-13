@@ -40,6 +40,7 @@ c++.exe -O2 \
   C:/msys64/mingw64/lib/libsimdjson.dll.a \
   C:/msys64/mingw64/lib/libssl.dll.a \
   C:/msys64/mingw64/lib/libcrypto.dll.a \
+  C:/msys64/mingw64/lib/libz.dll.a \
   -lws2_32 -lmswsock \
   "C:/msys64/mingw64/lib/libboost_atomic-mt.a" \
   -lsynchronization \

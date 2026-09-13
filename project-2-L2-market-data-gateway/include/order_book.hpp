@@ -28,6 +28,13 @@ struct PriceLadder {
     int64_t get_best_ask() const;
     int64_t get_best_bid() const;
 
+    // Collect up to max_n occupied levels, walking outward from the best price.
+    // from_high=true walks toward lower prices (bids); false walks toward higher
+    // prices (asks). Read-only, does not touch the incremental best-price cache.
+    // Intended for periodic (~1/s) export snapshots, not the per-tick hot path —
+    // cost is O(max_n) plus a bounded bitmap walk, not O(MAX_LEVELS).
+    int top_n(PriceLevel* out, int max_n, bool from_high) const;
+
     int64_t base_price  = 0;  // price tick that maps to index 0; set once per snapshot, never moves during a session
     bool    initialized = false;
 
@@ -69,6 +76,10 @@ public:
 
     int64_t last_update_id() const { return last_update_id_; }
     bool    is_seeded()      const { return seeded_; }
+
+    // Periodic export snapshot helpers — see PriceLadder::top_n. Cold path only.
+    int top_bids(PriceLevel* out, int max_n) const { return bids_.top_n(out, max_n, true); }
+    int top_asks(PriceLevel* out, int max_n) const { return asks_.top_n(out, max_n, false); }
 
 private:
     void apply_levels(const std::vector<PriceLevel>& levels, PriceLadder& ladder);
