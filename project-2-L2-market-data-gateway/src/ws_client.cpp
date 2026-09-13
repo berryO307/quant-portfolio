@@ -227,6 +227,7 @@ void WsClient::dispatch(simdjson::padded_string_view raw_msg) {
             if (parse_agg_trade(trade_elem, trade_tick)) {
                 uint64_t t2 = rdtscp();
                 latency_.parse_cycles.emplace_back(t2 - t1);
+                trade_tick.t1_tsc = t1;
                 trade_tick.t2_tsc = t2;
                 queue_.push(std::move(trade_tick));
             }
@@ -237,6 +238,7 @@ void WsClient::dispatch(simdjson::padded_string_view raw_msg) {
     if (ok) {
         uint64_t t2 = rdtscp();
         latency_.parse_cycles.emplace_back(t2 - t1);
+        tick.t1_tsc = t1;
         tick.t2_tsc = t2;
         queue_.push(std::move(tick));
     }
