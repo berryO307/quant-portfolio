@@ -66,6 +66,7 @@ struct ExportSample {
     uint64_t   t_book;       // rdtscp at book-update done
     uint64_t   t_publish;    // rdtscp at mmap publish done
     uint32_t   queue_depth;  // source SPSC queue size, sampled at pop time
+    int64_t    host_jitter_ns; // most recent JitterCanary reading — ambient host noise, not this tick's own latency
     SampleSide side;
     uint8_t    cpu_core_id;
 };
@@ -169,12 +170,14 @@ private:
 
             gzprintf(gz_,
                 "{\"type\":\"sample\",\"t_recv\":%llu,\"t_parse\":%llu,\"t_book\":%llu,"
-                "\"t_publish\":%llu,\"queue_depth\":%u,\"side\":\"%s\",\"cpu_core\":%u}\n",
+                "\"t_publish\":%llu,\"queue_depth\":%u,\"host_jitter_ns\":%lld,"
+                "\"side\":\"%s\",\"cpu_core\":%u}\n",
                 static_cast<unsigned long long>(s.t_recv),
                 static_cast<unsigned long long>(s.t_parse),
                 static_cast<unsigned long long>(s.t_book),
                 static_cast<unsigned long long>(s.t_publish),
                 static_cast<unsigned>(s.queue_depth),
+                static_cast<long long>(s.host_jitter_ns),
                 side_to_str(s.side),
                 static_cast<unsigned>(s.cpu_core_id));
             break;
