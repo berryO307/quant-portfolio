@@ -61,12 +61,25 @@ httpServer.on("upgrade", (req, socket, head) => {
     liveWss.handleUpgrade(req, socket, head, (ws) => {
       if (!connections.addClient(ws)) {
         ws.close(1013, "relay at capacity");
+        return;
       }
+      // A newly-connected browser client needs cpu_ghz to convert any
+      // SampleRecord's raw TSC fields into ns (see the hello handshake
+      // contract in types.ts) — send it directly rather than making the
+      // client wait for the next upstream gateway (re)connection.
+      ws.send(JSON.stringify({ type: "hello", cpu_ghz: ingestClient.cpuGhz() }));
     });
     return;
   }
 
   socket.destroy();
+});
+
+// Rebroadcast the hello handshake to every browser client whenever the
+// upstream gateway (re)connects, so clients already open pick up a changed
+// cpu_ghz too, not just newly-connecting ones (handled above).
+ingestClient.on("connected", ({ cpuGhz }) => {
+  connections.broadcast(JSON.stringify({ type: "hello", cpu_ghz: cpuGhz }));
 });
 
 // Push the rolling/session stats snapshot to browser clients on the same

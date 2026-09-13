@@ -176,6 +176,19 @@ def find_tail_events(samples: pd.DataFrame, percentiles: dict) -> tuple[pd.DataF
 def build_summary(session_path: Path, samples: pd.DataFrame, percentiles: dict,
                    tail: pd.DataFrame, jitter_info: dict, cpu_ghz: float) -> dict:
     duration_ns = float(samples["t_publish"].max() - samples["t_recv"].min()) / cpu_ghz
+
+    # Session-wide per-stage medians (exact, over the full sample set — not
+    # the geometric-bucket approximation used for the headline percentiles
+    # above). Needed by the web app's Phase 8 tail drill-down to compare a
+    # flagged event's own stage_ns against "what's normal for this session".
+    # Keys match each tail event's own stage_ns keys below (underscored),
+    # not STAGE_COLUMNS' hyphenated attribution-label keys.
+    stage_medians_ns = {
+        "parse":       float(samples["parse_ns"].median()),
+        "book_update": float(samples["book_update_ns"].median()),
+        "publish":     float(samples["publish_ns"].median()),
+    }
+
     return {
         "session": {
             "path": str(session_path),
@@ -184,6 +197,7 @@ def build_summary(session_path: Path, samples: pd.DataFrame, percentiles: dict,
             "duration_s_approx": duration_ns / 1e9,
         },
         "percentiles_ns": percentiles,
+        "stage_medians_ns": stage_medians_ns,
         "host_jitter": jitter_info,
         "tail_events": [
             {

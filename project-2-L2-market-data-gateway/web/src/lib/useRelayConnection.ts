@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isRelayMessage, type SnapshotRecord, type StatsMessage, type TimedTrade } from "./types";
+import { isRelayMessage, type LiveSample, type SnapshotRecord, type StatsMessage, type TimedTrade } from "./types";
 
 // Same reconnect backoff used everywhere else in this project (ws_client.hpp
 // for the gateway's Bybit feed, and the documented contract for a future
@@ -15,11 +15,32 @@ const RECONNECT_MULT = 2;
 const HEALTH_POLL_MS = 5_000;
 const MAX_TRADES = 200;
 
+// Matches the default used everywhere else this gap shows up (reader.py,
+// export_summary.py, relay/src/bybitIngestClient.ts) — used only until a
+// real hello handshake arrives (see relay/src/index.ts).
+const DEFAULT_CPU_GHZ = 3.2;
+
+// Bounded rolling buffer for the live latency chart + client-side tail
+// detection (lib/tailAttribution.ts). Not meant to be a full session
+// history — that's what a loaded Phase 5 summary.json is for.
+const MAX_LIVE_SAMPLES = 2_000;
+
+// Samples can arrive at thousands/sec; committing a new 2000-element array
+// to React state on every single one would mean that many re-renders and
+// array copies per second. Instead, incoming samples land in a plain ref
+// array (O(1) push, no re-render) and get flushed into state in one batch
+// on this interval — same "don't update UI faster than a human can see it"
+// idea as the Phase 3 terminal progress view's ~1s cadence, just faster
+// since this feeds a chart instead of text.
+const SAMPLE_FLUSH_INTERVAL_MS = 250;
+
 export interface RelayState {
   wsConnected: boolean;
   healthOk: boolean;
+  cpuGhz: number;
   latestSnapshot: SnapshotRecord | null;
   trades: TimedTrade[]; // newest first, capped at MAX_TRADES
+  recentSamples: LiveSample[]; // chronological (oldest first), capped at MAX_LIVE_SAMPLES
   stats: StatsMessage | null;
 }
 
@@ -31,13 +52,20 @@ export interface RelayState {
 export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState {
   const [wsConnected, setWsConnected] = useState(false);
   const [healthOk, setHealthOk] = useState(false);
+  const [cpuGhz, setCpuGhz] = useState(DEFAULT_CPU_GHZ);
   const [latestSnapshot, setLatestSnapshot] = useState<SnapshotRecord | null>(null);
   const [trades, setTrades] = useState<TimedTrade[]>([]);
+  const [recentSamples, setRecentSamples] = useState<LiveSample[]>([]);
   const [stats, setStats] = useState<StatsMessage | null>(null);
 
   const reconnectDelayRef = useRef(RECONNECT_BASE_MS);
   const wsRef = useRef<WebSocket | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read inside the onmessage closure so a sample can be converted to ns
+  // using whatever cpu_ghz is current, without recreating the closure every
+  // time a hello message updates it.
+  const cpuGhzRef = useRef(DEFAULT_CPU_GHZ);
+  const pendingSamplesRef = useRef<LiveSample[]>([]);
   // Indirection so scheduleReconnect can call "the current connect" without
   // referencing the connect binding from inside its own initializer (which
   // both violates the TDZ and would go stale across re-renders anyway).
@@ -75,6 +103,10 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
       if (!isRelayMessage(parsed)) return;
 
       switch (parsed.type) {
+        case "hello":
+          cpuGhzRef.current = parsed.cpu_ghz;
+          setCpuGhz(parsed.cpu_ghz);
+          break;
         case "snapshot":
           setLatestSnapshot(parsed);
           break;
@@ -84,8 +116,18 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
         case "stats":
           setStats(parsed);
           break;
-        case "sample":
-          break; // not rendered in this scaffold — stats messages already summarize these
+        case "sample": {
+          const ghz = cpuGhzRef.current;
+          pendingSamplesRef.current.push({
+            tRecvTsc: parsed.t_recv,
+            latencyNs: (parsed.t_publish - parsed.t_recv) / ghz,
+            parseNs: (parsed.t_parse - parsed.t_recv) / ghz,
+            bookUpdateNs: (parsed.t_book - parsed.t_parse) / ghz,
+            publishNs: (parsed.t_publish - parsed.t_book) / ghz,
+            hostJitterNs: parsed.host_jitter_ns,
+          });
+          break;
+        }
       }
     };
 
@@ -115,6 +157,21 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
   }, [connect]);
 
   useEffect(() => {
+    const flush = setInterval(() => {
+      if (pendingSamplesRef.current.length === 0) return;
+      const incoming = pendingSamplesRef.current;
+      pendingSamplesRef.current = [];
+      setRecentSamples((prev) => {
+        const combined = prev.length > 0 ? prev.concat(incoming) : incoming;
+        return combined.length > MAX_LIVE_SAMPLES
+          ? combined.slice(combined.length - MAX_LIVE_SAMPLES)
+          : combined;
+      });
+    }, SAMPLE_FLUSH_INTERVAL_MS);
+    return () => clearInterval(flush);
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
 
     const poll = async () => {
@@ -135,5 +192,5 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
     };
   }, [healthUrl]);
 
-  return { wsConnected, healthOk, latestSnapshot, trades, stats };
+  return { wsConnected, healthOk, cpuGhz, latestSnapshot, trades, recentSamples, stats };
 }
