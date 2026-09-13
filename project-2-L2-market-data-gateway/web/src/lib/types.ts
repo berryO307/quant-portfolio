@@ -52,12 +52,23 @@ export interface StatsMessage {
   currentSession: HistogramSnapshot;
 }
 
-export type RelayMessage = SampleRecord | SnapshotRecord | TradeRecord | StatsMessage;
+// Rebroadcast by the relay to every browser client whenever the upstream
+// gateway (re)connects, and sent directly to each newly-connecting browser
+// client too (see relay/src/index.ts) — same handshake contract as
+// relay/src/types.ts's HelloMessage, one hop further downstream. Needed
+// because SampleRecord's t_recv/t_parse/t_book/t_publish are raw TSC values,
+// not ns.
+export interface HelloMessage {
+  type: "hello";
+  cpu_ghz: number;
+}
+
+export type RelayMessage = SampleRecord | SnapshotRecord | TradeRecord | StatsMessage | HelloMessage;
 
 export function isRelayMessage(value: unknown): value is RelayMessage {
   if (typeof value !== "object" || value === null || !("type" in value)) return false;
   const t = (value as { type: unknown }).type;
-  return t === "sample" || t === "snapshot" || t === "trade" || t === "stats";
+  return t === "sample" || t === "snapshot" || t === "trade" || t === "stats" || t === "hello";
 }
 
 // Scale factors from the C++ side (types.hpp: PRICE_SCALE, QTY_SCALE) —
@@ -83,4 +94,56 @@ export function toQty(scaled: number): number {
 // stand-in — off by network + relay queueing delay, not by session drift.
 export interface TimedTrade extends TradeRecord {
   receivedAtMs: number;
+}
+
+// ── Phase 8: latency panel ──────────────────────────────────────────────────
+
+// A live SampleRecord with its TSC fields already converted to ns (using
+// whatever cpu_ghz was known at the moment it arrived — see
+// useRelayConnection). Kept in a bounded rolling buffer for the live scatter
+// chart and for client-side tail detection (lib/tailAttribution.ts).
+export interface LiveSample {
+  tRecvTsc: number;
+  latencyNs: number;
+  parseNs: number;
+  bookUpdateNs: number;
+  publishNs: number;
+  hostJitterNs: number;
+}
+
+export type Attribution = "host_jitter" | "parse" | "book-update" | "publish";
+
+// Canonical shape both a loaded historical summary.json's tail_events and
+// client-side live tail detection produce, so TailEventsFeed/StageBreakdown
+// don't need to know which source they're rendering.
+export interface TailEvent {
+  key: string;
+  tRecvTsc: number;
+  latencyNs: number;
+  hostJitterNs: number;
+  attribution: Attribution;
+  stageNs: { parse: number; bookUpdate: number; publish: number };
+}
+
+// Mirrors analysis/export_summary.py's summary.json exactly (snake_case,
+// matching the file on disk) — parsed as-is from an uploaded file, then
+// adapted into the canonical shapes above by lib/tailAttribution.ts.
+export interface HistoricalSummary {
+  session: {
+    path: string;
+    cpu_ghz_used: number;
+    n_samples: number;
+    duration_s_approx: number;
+  };
+  percentiles_ns: { count: number; p50_ns: number; p99_ns: number; p999_ns: number; max_ns: number };
+  stage_medians_ns: { parse: number; book_update: number; publish: number };
+  host_jitter: { baseline_ns: number; elevated_threshold_ns: number };
+  tail_events: {
+    index: number;
+    t_recv_tsc: number;
+    latency_ns: number;
+    host_jitter_ns: number;
+    attribution: Attribution;
+    stage_ns: { parse: number; book_update: number; publish: number };
+  }[];
 }

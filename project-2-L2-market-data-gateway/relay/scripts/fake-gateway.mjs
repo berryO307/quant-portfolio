@@ -42,22 +42,59 @@ gw.on("open", () => {
     }));
   }, 300);
 
+  // Randomized with occasional injected spikes (a book-update stall, a host
+  // jitter spike) so anything downstream that flags/attributes tail events
+  // (the web app's LatencyPanel) actually has something to detect — fixed
+  // deltas every time would never cross a p99.9 threshold. Each duration is
+  // clamped to a positive floor: a real pipeline stage never takes negative
+  // time, and an unclamped jitter term here could otherwise produce one.
+  // Sent every 5ms (~200/s) — well under the real gateway's throughput, but
+  // fast enough to fill the client's rolling buffer in test runs; a live
+  // p99.9 threshold needs >1000 buffered samples before it can differ from
+  // the buffer's max at all (below that, "top 0.1%" rounds down to zero
+  // samples), which the real system's much higher rate reaches in under a
+  // second regardless.
   let sampleId = 0;
   setInterval(() => {
     sampleId++;
     const tRecv = 1_000_000_000 + sampleId * 50_000;
+    const jitter = () => Math.round((Math.random() - 0.5) * 1000);
+
+    let parseNs = Math.max(200, 3000 + jitter());
+    let bookNs = Math.max(200, 1500 + jitter());
+    let publishNs = Math.max(200, 800 + jitter());
+    let hostJitterNs = 10 + Math.round(Math.random() * 10);
+
+    const roll = Math.random();
+    if (roll < 0.01) {
+      bookNs *= 40; // book-update stall — latency inflated, jitter reading stays normal
+    } else if (roll < 0.02) {
+      // Host jitter spike: the OS preempts this thread mid-stage, which
+      // both shows up as elevated host_jitter_ns AND delays whichever stage
+      // was running — inflating only host_jitter_ns without also delaying a
+      // stage would make this sample's overall latency normal, so it could
+      // never cross the p99.9 tail threshold in the first place and the
+      // host_jitter attribution path would never be exercised.
+      hostJitterNs = 200_000 + Math.round(Math.random() * 100_000);
+      publishNs += hostJitterNs * 2; // clearly larger than a book-update stall, so it reliably clears p99.9 too
+    }
+
+    const tParse = tRecv + Math.round(parseNs * CPU_GHZ);
+    const tBook = tParse + Math.round(bookNs * CPU_GHZ);
+    const tPublish = tBook + Math.round(publishNs * CPU_GHZ);
+
     gw.send(JSON.stringify({
       type: "sample",
       t_recv: tRecv,
-      t_parse: tRecv + 9600,
-      t_book: tRecv + 14400,
-      t_publish: tRecv + 16960,
+      t_parse: tParse,
+      t_book: tBook,
+      t_publish: tPublish,
       queue_depth: 2,
-      host_jitter_ns: 12,
+      host_jitter_ns: hostJitterNs,
       side: "bid",
       cpu_core: 3,
     }));
-  }, 100);
+  }, 5);
 });
 
 gw.on("error", (e) => console.error("[fake-gateway] error:", e.message));
