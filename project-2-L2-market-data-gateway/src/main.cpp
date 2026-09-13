@@ -7,6 +7,8 @@
 #include "rdtsc.hpp"
 #include "thread_utils.hpp"
 #include "export_pipeline.hpp"
+#include "live_histogram.hpp"
+#include "terminal_progress.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -403,14 +405,6 @@ int main(int argc, char* argv[]) {
     // Initiate the latency store here so it exists before the thread starts
     LatencyStore latency_;
 
-    // Cold-path export ring buffer: ~340 bytes/slot * 65536 slots =~ 22MB —
-    // too big for a thread stack (same reasoning as OrderBook below), so it's
-    // heap-allocated once here and never touched again except through push()/pop().
-    // Single producer (consumer_thread, below) / single consumer (ColdPathExporter's
-    // own drain thread) — SPSC contract, same as the Tick queues above.
-    auto export_ring = std::make_unique<ExportRingBuffer>();
-    ColdPathExporter exporter(*export_ring);
-
     // Instantiate the MmapWriter.
     // We need to give it a binary file path (not .csv) and a maximum capacity.
     // Let's pre-allocate space for 10 million ticks (adjust as needed for run time).
@@ -424,6 +418,22 @@ int main(int argc, char* argv[]) {
     // printing is just for verification, not part of the timing logic.
     double host_ghz = calibrate_tsc_ghz();
     std::cout << "[main] Calibrated Host TSC Frequency: " << host_ghz << " GHz\n";
+
+    // Cold-path export ring buffer: ~340 bytes/slot * 65536 slots =~ 22MB —
+    // too big for a thread stack (same reasoning as OrderBook below), so it's
+    // heap-allocated once here and never touched again except through push()/pop().
+    // Single producer (consumer_thread, below) / single consumer (ColdPathExporter's
+    // own drain thread) — SPSC contract, same as the Tick queues above.
+    auto export_ring = std::make_unique<ExportRingBuffer>();
+
+    // LiveHistogram is updated only by the drain thread inside ColdPathExporter
+    // (never the trading/gateway thread) and is owned here, independently of
+    // ColdPathExporter, so any future consumer (e.g. a relay/web layer) can
+    // hold the same reference without this file changing. TerminalProgressView
+    // is just today's consumer — it only calls histogram.snapshot().
+    LiveHistogram live_histogram;
+    ColdPathExporter exporter(*export_ring, host_ghz, live_histogram);
+    TerminalProgressView progress_view(live_histogram);
 
     // Spawn threads. Pinning happens inside each lambda via pin_thread_self()
     // rather than externally via pin_thread() after spawn.
