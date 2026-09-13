@@ -262,8 +262,18 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
             return; // In production code, consider logging this to a file or monitoring system instead of stderr.
         }
 
+        // Stage 3: book-update complete (depth/trade branch above has finished mutating
+        // book state / populating `out`). Captured here, before publish, so it covers
+        // both the depth and trade paths uniformly.
+        uint64_t t4 = rdtscp();
+        latency.book_cycles.emplace_back(t4 - tick.t2_tsc);
+
         // Single memcpy into mmap — replaces the entire slow csv << string formatting chain
         mmap_writer.write(out);
+
+        // Stage 4: publish complete (mmap write done).
+        uint64_t t5 = rdtscp();
+        latency.publish_cycles.emplace_back(t5 - t4);
 
         // Console heartbeat every 10 s
         auto now = std::chrono::steady_clock::now();

@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <vector>
+#include <algorithm>
 #include <chrono>
 #include <thread>
 #include <fstream>
@@ -62,10 +63,14 @@ inline double tsc_to_ns(uint64_t delta, double cpu_ghz) {
 struct LatencyStore {
     std::vector<uint64_t> parse_cycles;   // point1 → point2 (parse latency)
     std::vector<uint64_t> queue_cycles;   // point2 → point3 (queue transit latency)
+    std::vector<uint64_t> book_cycles;    // point2 → point4 (parse done -> book-update done)
+    std::vector<uint64_t> publish_cycles; // point4 → point5 (book-update done -> mmap publish done)
 
     void reserve(size_t n = 10'000'000) {
         parse_cycles.reserve(n);
         queue_cycles.reserve(n);
+        book_cycles.reserve(n);
+        publish_cycles.reserve(n);
     }
 
     // Cold-path I/O: uses std::ofstream for simplicity 
@@ -77,15 +82,19 @@ struct LatencyStore {
             return;
         }
 
-    // Two-column CSV: parse latency (simdjson hot path) and queue transit (SPSC ring buffer).
-    // parse_cycles: rdtscp delta from message arrival to queue push (t1→t2).
-    // queue_cycles: rdtscp delta from queue push to consumer pop (t2→t3).
+    // Per-stage CSV: recv->parse (simdjson hot path), parse->dequeue (SPSC ring buffer),
+    // parse->book-update, and book-update->publish (mmap write).
+    // parse_cycles:   rdtscp delta from message arrival to queue push (t1->t2).
+    // queue_cycles:   rdtscp delta from queue push to consumer pop (t2->t3).
+    // book_cycles:    rdtscp delta from queue push to book-update done (t2->t4).
+    // publish_cycles: rdtscp delta from book-update done to mmap publish done (t4->t5).
     // Reported in nanoseconds using the dynamically calibrated TSC frequency.
-    csv << "queue_transit_ns,parse_ns\n";
+    csv << "queue_transit_ns,parse_ns,book_update_ns,publish_ns\n";
 
-    // Zip both vectors — use the shorter one to avoid out-of-bounds if counts diverge.
+    // Zip all four vectors — use the shortest to avoid out-of-bounds if counts diverge.
     // They should always match (one entry per tick) but defensive sizing is correct here.
-    size_t n = std::min(queue_cycles.size(), parse_cycles.size());
+    size_t n = std::min({queue_cycles.size(), parse_cycles.size(),
+                          book_cycles.size(), publish_cycles.size()});
     if (parse_cycles.empty()) {
         std::cerr << "[LatencyStore] WARNING: parse_cycles is empty — "
                   << "check that dispatch() calls latency_.parse_cycles.emplace_back()\n";
@@ -97,12 +106,20 @@ struct LatencyStore {
         csv << ",";
         if (i < parse_cycles.size())
             csv << tsc_to_ns(parse_cycles[i], calibrated_ghz);
+        csv << ",";
+        if (i < book_cycles.size())
+            csv << tsc_to_ns(book_cycles[i], calibrated_ghz);
+        csv << ",";
+        if (i < publish_cycles.size())
+            csv << tsc_to_ns(publish_cycles[i], calibrated_ghz);
         csv << "\n";
     }
 
     std::cout << "[main] Latency metrics dumped: " << n
               << " records (queue=" << queue_cycles.size()
               << " parse=" << parse_cycles.size()
+              << " book=" << book_cycles.size()
+              << " publish=" << publish_cycles.size()
               << ") to " << filepath << "\n";
     }
 };

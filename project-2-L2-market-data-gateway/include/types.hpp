@@ -50,7 +50,10 @@ using TickData = std::variant<DepthUpdate, AggTrade>;
 
 struct Tick {
     TickData data;
-    // For latency measurement: t2_tsc is captured after parsing but before queue push
+    // Per-stage latency measurement (rdtscp, see rdtsc.hpp):
+    // t1_tsc is captured on recv, before parsing begins.
+    // t2_tsc is captured after parsing but before queue push.
+    uint64_t t1_tsc = 0;
     uint64_t t2_tsc = 0;
 };
 
