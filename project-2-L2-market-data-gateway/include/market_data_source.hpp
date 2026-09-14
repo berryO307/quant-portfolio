@@ -33,15 +33,16 @@ public:
     virtual void run(Channel channel) = 0;
 };
 
-// The only place that branches on which exchange to talk to. Adding a
-// third source later means a third case here (and a third adapter class)
-// — nothing in main.cpp, OrderBook, or downstream needs to change.
+// Bybit support (BybitAdapter) was removed after this project moved fully
+// to Hyperliquid — see BUGS.md for why "live feed unavailable" kept
+// showing up and git history (feature/hyperliquid-adapter) for the earlier
+// two-source version, if a second source is ever needed again. Kept as a
+// named config struct + factory function (rather than main.cpp directly
+// constructing HyperliquidAdapter) so that seam still exists cheaply.
 struct MarketDataSourceConfig {
-    enum class Exchange { Bybit, Hyperliquid } exchange = Exchange::Bybit;
-    // Bybit: "btcusdt"-style (case-insensitive, adapter uppercases it).
-    // Hyperliquid: a native coin ("BTC") or a builder-deployed sub-dex
-    // coin ("xyz:CL") — both subscribe identically over Hyperliquid's WS,
-    // confirmed live; the adapter passes this straight through untouched.
+    // A native coin ("BTC") or a builder-deployed sub-dex coin ("xyz:CL")
+    // — both subscribe identically over Hyperliquid's WS, confirmed live;
+    // the adapter passes this straight through untouched.
     std::string symbol;
 };
 

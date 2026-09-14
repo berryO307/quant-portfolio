@@ -1,7 +1,6 @@
 #include "types.hpp"
 #include "spsc_ring_buffer.hpp"
 #include "order_book.hpp"
-#include "rest_client.hpp"
 #include "market_data_source.hpp"
 #include "mmap_writer.hpp"
 #include "rdtsc.hpp"
@@ -88,11 +87,11 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
     // Exit gracefully if stopped while waiting
     if (stop.load(std::memory_order_relaxed)) return;
 
-    // Bybit's WS sends a "snapshot" type message immediately after subscribe.
-    // Use that as the seed instead of REST — REST and WS sequence id spaces
-    // are unrelated on Bybit, so REST cannot bootstrap a WS book.
-    // rest_client.cpp is preserved for future use in hexagonal architecture
-    // where each adapter will use its native exchange's bootstrap mechanism.
+    // Hyperliquid's l2Book pushes a full snapshot on every message (pu==0
+    // on every DepthUpdate — see HyperliquidAdapter's header comment), so
+    // the very first depth message received already seeds the book; no
+    // REST bootstrap needed (rest_client.cpp, Bybit-specific, was removed
+    // along with BybitAdapter).
     std::cout << "[consumer] waiting for WS snapshot...\n";
     bool seeded_from_ws = false;
     
@@ -120,7 +119,8 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
     }
         
         if (auto* depth = std::get_if<DepthUpdate>(&init_tick.data)) {
-        // Bybit snapshot marker: pu==0 (set by parse_depth when type=="snapshot")
+        // Full-snapshot marker: pu==0 (set by HyperliquidAdapter::parse_depth
+        // on every message — l2Book has no delta protocol at all)
             if (depth->pu == 0) {
                 OrderBookSnapshot snap;
                 snap.last_update_id = depth->u;
@@ -237,16 +237,16 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
                 uint64_t current_last_u = last_u.load(std::memory_order_acquire);
 
                 // pu==0 is the established "this message IS a full snapshot"
-                // sentinel (see BybitAdapter::parse_depth and
-                // OrderBook::apply_depth, which already treats it as an
-                // unconditional reseed regardless of current_last_u). Bybit
-                // only sends this mid-stream rarely; Hyperliquid's l2Book
-                // sends it on EVERY message (confirmed live — l2Book has no
-                // delta/resync protocol at all, just full-book pushes), so
-                // the delta-continuity check below must not run for it —
-                // otherwise every single Hyperliquid update would trip this
-                // as a "gap" (pu=0 can never equal a nonzero current_last_u)
-                // and force a resync loop on every tick.
+                // sentinel (see OrderBook::apply_depth, which already treats
+                // it as an unconditional reseed regardless of
+                // current_last_u). Hyperliquid's l2Book sends this on EVERY
+                // message (confirmed live — l2Book has no delta/resync
+                // protocol at all, just full-book pushes; the now-removed
+                // BybitAdapter only sent it mid-stream rarely), so the
+                // delta-continuity check below must not run for it —
+                // otherwise every single update would trip this as a "gap"
+                // (pu=0 can never equal a nonzero current_last_u) and force
+                // a resync loop on every tick.
                 if (depth->pu != 0) {
                     // FUTURES GAP LOGIC: 'pu' MUST exactly match the book's current_last_u
                     if (static_cast<uint64_t>(depth->pu) != current_last_u) {
@@ -405,33 +405,15 @@ int main(int argc, char* argv[]) {
     int run_minutes = 30;
     if (argc > 1) run_minutes = std::stoi(argv[1]);
 
-    std::string symbol   = (argc > 2) ? argv[2] : "btcusdt";
+    // Hyperliquid-style symbol: a native coin ("BTC") or a builder-deployed
+    // sub-dex coin ("xyz:CL"). Bybit support (and its "btcusdt"-style
+    // default) was removed — see market_data_source.hpp's comment.
+    std::string symbol = (argc > 2) ? argv[2] : "BTC";
 
-    // --source=bybit|hyperliquid, scanned independently of the positional
-    // run_minutes/symbol args so existing invocations (./quant_day1.exe 3
-    // btcusdt) keep working unchanged with the default. Not positional
-    // itself since it was added after run_minutes/symbol were already
-    // established as argv[1]/argv[2] elsewhere (scripts, docs) — an order-
-    // independent flag avoids reshuffling those.
     MarketDataSourceConfig source_cfg;
-    source_cfg.exchange = MarketDataSourceConfig::Exchange::Bybit;
-    for (int i = 1; i < argc; ++i) {
-        std::string_view arg = argv[i];
-        if (arg.starts_with("--source=")) {
-            std::string_view val = arg.substr(std::string_view("--source=").size());
-            if (val == "hyperliquid") {
-                source_cfg.exchange = MarketDataSourceConfig::Exchange::Hyperliquid;
-            } else if (val != "bybit") {
-                std::cerr << "[main] unknown --source=" << val << " (expected bybit|hyperliquid)\n";
-                return 1;
-            }
-        }
-    }
     source_cfg.symbol = symbol;
 
-    std::cout << "[main] L2DataCapture  source="
-              << (source_cfg.exchange == MarketDataSourceConfig::Exchange::Hyperliquid ? "hyperliquid" : "bybit")
-              << "  symbol=" << symbol
+    std::cout << "[main] L2DataCapture  source=hyperliquid  symbol=" << symbol
               << "  run=" << run_minutes << "m\n";
 
     // FIX 3: Replaced ThreadQueue<Tick> with SpscRingBuffer<Tick, 1024>.
