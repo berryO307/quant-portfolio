@@ -34,15 +34,22 @@ const TIMEFRAMES: { label: string; ms: number }[] = [
 ];
 const DEFAULT_TIMEFRAME_MS = 1_000;
 
-// Floor for the depth-level selector — below this the curve goes back to
-// looking like the original ~11-point version this whole feature exists to
-// fix. There's no hardcoded ceiling: the selector's actual max always
-// tracks however many levels the live snapshot genuinely has (see
-// maxAvailableLevels below), so it grows on its own if
-// EXPORT_SNAPSHOT_DEPTH (include/export_pipeline.hpp) is ever raised again
-// — nothing here needs to change to match.
-const MIN_DEPTH_LEVELS = 50;
-const DEPTH_STEP = 10;
+// Floor for the depth-level selector. Was 50 back when this fed Bybit's
+// export pipeline (up to 100 real levels/side) — now that Hyperliquid is
+// the only source, its l2Book channel is HARD-capped at exactly 20 levels
+// per side, confirmed directly against the live API (tried nSigFigs
+// 2 through 5 on both REST and WS: always exactly 20/20, regardless —
+// nSigFigs only changes price-aggregation granularity, never level count;
+// there is no deeper feed, WS or REST, native or dex-scoped). A floor of
+// 50 could never be reached, which is why the selector always collapsed
+// to a single misleadingly-labeled "50 levels" option showing only the
+// real ~20. Floor and step both lowered to fit the real ceiling. There's
+// still no hardcoded ceiling here: the selector's actual max always tracks
+// however many levels the live snapshot genuinely has (see
+// maxAvailableLevels below) — if Hyperliquid ever raises l2Book's own cap,
+// this grows to match with nothing here needing to change.
+const MIN_DEPTH_LEVELS = 5;
+const DEPTH_STEP = 5;
 
 // Fixes the gap at the spread by not leaving one at all instead of
 // shading/labeling it: both series get one shared bridging point exactly at
@@ -63,7 +70,12 @@ function buildAlignedData(
 ): {
   data: uPlot.AlignedData;
   rawXs: number[];
-  midPrice: number | null;
+  // Index of the bridge point within data[0]/rawXs, or null if there's no
+  // bridge (one side empty). The spot-price marker reads its position from
+  // data[0][bridgeIdx] directly (see positionSpotLine) rather than from a
+  // separately-computed price value — this index IS where that price lives
+  // in the exact array uPlot is rendering, so the two can't drift apart.
+  bridgeIdx: number | null;
 } {
   const full = computeDepthLevels(snapshot);
   const bids = full.bids.slice(0, maxLevels);
@@ -105,7 +117,9 @@ function buildAlignedData(
     ...askTotals,
   ];
 
-  return { data: [xs, bidYs, askYs], rawXs, midPrice };
+  const bridgeIdx = midPrice != null ? bidXs.length : null;
+
+  return { data: [xs, bidYs, askYs], rawXs, bridgeIdx };
 }
 
 export function DepthCurve({
@@ -122,7 +136,7 @@ export function DepthCurve({
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const spotLineRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
-  const midPriceRef = useRef<number | null>(null);
+  const bridgeIdxRef = useRef<number | null>(null);
   const onHoverPriceRef = useRef(onHoverPrice);
   // True while the mouse is actively over THIS chart — set synchronously by
   // the setCursor hook below, read by the ladder-hover-sync effect further
@@ -136,7 +150,14 @@ export function DepthCurve({
   const isSelfHoverRef = useRef(false);
   const [timeframeMs, setTimeframeMs] = useState(DEFAULT_TIMEFRAME_MS);
   const [throttledSnapshot, setThrottledSnapshot] = useState<SnapshotRecord | null>(null);
-  const [depthLevels, setDepthLevels] = useState(MIN_DEPTH_LEVELS);
+  // Defaults to "show everything available" (effectiveDepthLevels below
+  // clamps this to whatever the live snapshot actually has) rather than
+  // the floor — with a real ceiling as shallow as Hyperliquid's 20/side,
+  // starting at the 5-level floor would show a quarter of the book by
+  // default, which reads as broken/incomplete rather than deliberately
+  // narrowed. A generously large sentinel keeps this correct even if a
+  // future source's real ceiling differs from today's 20.
+  const [depthLevels, setDepthLevels] = useState(1000);
   const latestSnapshotRef = useRef<SnapshotRecord | null>(null);
 
   useEffect(() => {
@@ -171,13 +192,28 @@ export function DepthCurve({
   const effectiveDepthLevels = Math.min(depthLevels, maxAvailableLevels);
 
   // Shared by the resize observer and the snapshot-update effect below —
-  // repositions the permanent spot-price marker from whatever midPriceRef
-  // currently holds, against the plot's CURRENT scale.
+  // repositions the permanent spot-price marker.
+  //
+  // Reads the marker's x-VALUE from plot.data[0][bridgeIdxRef.current] —
+  // uPlot's OWN current data array — rather than from a separately-tracked
+  // price ref. Previously this read a `midPrice` value computed once in
+  // buildAlignedData and stashed in a ref alongside (but independent of)
+  // the call to plot.setData(data) — two copies of "the same" value that
+  // only stayed in sync by both being set together in the same effect.
+  // Reported via screenshot: the marker sometimes rendered many real price
+  // levels deep into the bid or ask side instead of at the true best-bid/
+  // best-ask boundary — every captured/replayed snapshot checked was
+  // internally well-formed (sorted, never crossed, correct midpoint), which
+  // pointed at the rendering side, not the data. Indexing into plot.data
+  // directly makes the marker's position and the plot's own rendered data
+  // the same read, closing off that whole class of two-copies-drifting-
+  // apart bug regardless of the exact trigger.
   function positionSpotLine() {
     const plot = plotRef.current;
     const line = spotLineRef.current;
-    const mid = midPriceRef.current;
+    const idx = bridgeIdxRef.current;
     if (!plot || !line) return;
+    const mid = idx != null ? (plot.data[0]?.[idx] as number | undefined) : undefined;
     if (mid == null) {
       line.style.display = "none";
       return;
@@ -361,9 +397,9 @@ export function DepthCurve({
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot || !effectiveSnapshot) return;
-    const { data, rawXs, midPrice } = buildAlignedData(effectiveSnapshot, effectiveDepthLevels);
+    const { data, rawXs, bridgeIdx } = buildAlignedData(effectiveSnapshot, effectiveDepthLevels);
     rawXsRef.current = rawXs;
-    midPriceRef.current = midPrice;
+    bridgeIdxRef.current = bridgeIdx;
     plot.setData(data);
     positionSpotLine();
      
