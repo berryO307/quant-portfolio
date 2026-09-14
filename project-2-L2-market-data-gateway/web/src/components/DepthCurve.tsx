@@ -122,6 +122,43 @@ function buildAlignedData(
   return { data: [xs, bidYs, askYs], rawXs, bridgeIdx };
 }
 
+// Motion between snapshots, not shape — the stepped rendering stays exactly
+// as-is (see the y-axis comment below for why a curved/smoothed shape would
+// misrepresent discrete order-book levels the same way log-scaling would
+// have). What "smooth" means here is a snapshot update growing/shrinking
+// each bar over ~200ms instead of snapping, matched PER PRICE LEVEL rather
+// than per array index — a snapshot's xs array shifts as the best price
+// moves, so index 0 in the old frame and index 0 in the new frame are
+// rarely the same price; tweening by index would animate between two
+// unrelated levels. Looked up by exact price match instead: a level whose
+// price exists in both frames smoothly interpolates between its two real
+// sizes, a level that's newly appeared (or in the old frame, disappeared)
+// just appears/vanishes immediately — there's no honest "from" value to
+// animate a level that didn't exist a moment ago.
+const TWEEN_MS = 200;
+
+function easeOutQuad(t: number): number {
+  return t * (2 - t);
+}
+
+function lookupFromValues(
+  oldXs: readonly number[],
+  oldYs: readonly (number | null)[],
+  newXs: readonly number[],
+  newYs: readonly (number | null)[]
+): (number | null)[] {
+  const byPrice = new Map<number, number>();
+  for (let i = 0; i < oldXs.length; i++) {
+    const y = oldYs[i];
+    if (y != null) byPrice.set(oldXs[i]!, y);
+  }
+  return newYs.map((toV, i) => {
+    if (toV == null) return null;
+    const fromV = byPrice.get(newXs[i]!);
+    return fromV != null ? fromV : toV; // no match -> appears at its final value, not animated
+  });
+}
+
 export function DepthCurve({
   snapshot,
   hoveredPrice,
@@ -137,6 +174,10 @@ export function DepthCurve({
   const spotLineRef = useRef<HTMLDivElement | null>(null);
   const tooltipRef = useRef<HTMLDivElement | null>(null);
   const bridgeIdxRef = useRef<number | null>(null);
+  // In-flight tween's requestAnimationFrame handle, so a new snapshot
+  // arriving mid-tween can cancel and retarget from whatever's currently
+  // on screen instead of the two tweens fighting over plot.setData().
+  const tweenRafRef = useRef<number | null>(null);
   const onHoverPriceRef = useRef(onHoverPrice);
   // True while the mouse is actively over THIS chart — set synchronously by
   // the setCursor hook below, read by the ladder-hover-sync effect further
@@ -392,17 +433,75 @@ export function DepthCurve({
   }, [minHeight, priceDecimals, qtyDecimals]);
 
   // New (possibly throttled) snapshot, OR a depth-selector change -> update
-  // the existing instance's data in place, and reposition the permanent
-  // spot-price line.
+  // the existing instance's data in place, tweening the cumulative-size
+  // bars from whatever's currently on screen to the new values instead of
+  // snapping (see TWEEN_MS/lookupFromValues above), and reposition the
+  // permanent spot-price line each frame since the marker's own pixel
+  // position depends on the plot's current data.
   useEffect(() => {
     const plot = plotRef.current;
     if (!plot || !effectiveSnapshot) return;
+
     const { data, rawXs, bridgeIdx } = buildAlignedData(effectiveSnapshot, effectiveDepthLevels);
     rawXsRef.current = rawXs;
     bridgeIdxRef.current = bridgeIdx;
-    plot.setData(data);
-    positionSpotLine();
-     
+
+    // A snapshot arriving before the previous tween finished cancels it —
+    // the new tween starts from whatever's actually on screen right now
+    // (read below via plot.data), not from the last fully-settled frame,
+    // so back-to-back updates never stutter or visibly reset.
+    if (tweenRafRef.current != null) {
+      cancelAnimationFrame(tweenRafRef.current);
+      tweenRafRef.current = null;
+    }
+
+    const [newXs, newBidYs, newAskYs] = data as [number[], (number | null)[], (number | null)[]];
+    const curXs = (plot.data[0] as number[] | undefined) ?? [];
+    const curBidYs = (plot.data[1] as (number | null)[] | undefined) ?? [];
+    const curAskYs = (plot.data[2] as (number | null)[] | undefined) ?? [];
+
+    // Nothing to animate from (first-ever data for this chart) -> set the
+    // final values directly, no tween.
+    if (curXs.length === 0) {
+      plot.setData(data);
+      positionSpotLine();
+      return;
+    }
+
+    const fromBidYs = lookupFromValues(curXs, curBidYs, newXs, newBidYs);
+    const fromAskYs = lookupFromValues(curXs, curAskYs, newXs, newAskYs);
+
+    const start = performance.now();
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / TWEEN_MS);
+      const eased = easeOutQuad(t);
+      const bidYs = newBidYs.map((toV, i) => {
+        const fromV = fromBidYs[i];
+        return toV == null || fromV == null ? toV : fromV + (toV - fromV) * eased;
+      });
+      const askYs = newAskYs.map((toV, i) => {
+        const fromV = fromAskYs[i];
+        return toV == null || fromV == null ? toV : fromV + (toV - fromV) * eased;
+      });
+      plot.setData([newXs, bidYs, askYs]);
+      positionSpotLine();
+
+      if (t < 1) {
+        tweenRafRef.current = requestAnimationFrame(tick);
+      } else {
+        tweenRafRef.current = null;
+        plot.setData(data); // snap to the exact final values, no float drift
+        positionSpotLine();
+      }
+    };
+    tweenRafRef.current = requestAnimationFrame(tick);
+
+    return () => {
+      if (tweenRafRef.current != null) {
+        cancelAnimationFrame(tweenRafRef.current);
+        tweenRafRef.current = null;
+      }
+    };
   }, [effectiveSnapshot, effectiveDepthLevels]);
 
   // Ladder -> curve hover: draw a plain overlay line, never touching
