@@ -27,7 +27,9 @@ add_executable(L2DataCapture
     src/main.cpp
     src/order_book.cpp
     src/rest_client.cpp
-    src/ws_client.cpp
+    src/bybit_adapter.cpp
+    src/hyperliquid_adapter.cpp
+    src/market_data_source_factory.cpp
 )
 
 target_include_directories(L2DataCapture PRIVATE include)

@@ -22,7 +22,7 @@ INCS="-I$ROOT/include -IC:/msys64/mingw64/include"
 FLAGS="-O2 -std=gnu++20 -Wall -Wextra"
 
 OBJS=""
-for f in main order_book rest_client ws_client; do
+for f in main order_book rest_client bybit_adapter hyperliquid_adapter market_data_source_factory; do
   OBJ="$BUILD/CMakeFiles/quant_day1.dir/src/$f.cpp.obj"
   echo "  CC  src/$f.cpp"
   c++ $DEFINES $INCS $FLAGS -c "$ROOT/src/$f.cpp" -o "$OBJ"

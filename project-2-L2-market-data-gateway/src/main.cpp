@@ -2,7 +2,7 @@
 #include "spsc_ring_buffer.hpp"
 #include "order_book.hpp"
 #include "rest_client.hpp"
-#include "ws_client.hpp"
+#include "market_data_source.hpp"
 #include "mmap_writer.hpp"
 #include "rdtsc.hpp"
 #include "thread_utils.hpp"
@@ -236,12 +236,25 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
                 // Never let apply_depth see events it shouldn't
                 uint64_t current_last_u = last_u.load(std::memory_order_acquire);
 
-                // FUTURES GAP LOGIC: 'pu' MUST exactly match the book's current_last_u
-                if (static_cast<uint64_t>(depth->pu) != current_last_u) {
-                    ++gap_count;
-                    std::cerr << "[consumer] GAP: expected pu=" << current_last_u
-                              << " got pu=" << depth->pu << "\n";
-                    goto RESYNC;
+                // pu==0 is the established "this message IS a full snapshot"
+                // sentinel (see BybitAdapter::parse_depth and
+                // OrderBook::apply_depth, which already treats it as an
+                // unconditional reseed regardless of current_last_u). Bybit
+                // only sends this mid-stream rarely; Hyperliquid's l2Book
+                // sends it on EVERY message (confirmed live — l2Book has no
+                // delta/resync protocol at all, just full-book pushes), so
+                // the delta-continuity check below must not run for it —
+                // otherwise every single Hyperliquid update would trip this
+                // as a "gap" (pu=0 can never equal a nonzero current_last_u)
+                // and force a resync loop on every tick.
+                if (depth->pu != 0) {
+                    // FUTURES GAP LOGIC: 'pu' MUST exactly match the book's current_last_u
+                    if (static_cast<uint64_t>(depth->pu) != current_last_u) {
+                        ++gap_count;
+                        std::cerr << "[consumer] GAP: expected pu=" << current_last_u
+                                  << " got pu=" << depth->pu << "\n";
+                        goto RESYNC;
+                    }
                 }
 
                 // Let the book apply the levels. If it still fails (e.g., malformed data), resync.
@@ -393,7 +406,32 @@ int main(int argc, char* argv[]) {
     if (argc > 1) run_minutes = std::stoi(argv[1]);
 
     std::string symbol   = (argc > 2) ? argv[2] : "btcusdt";
-    std::cout << "[main] L2DataCapture  symbol=" << symbol
+
+    // --source=bybit|hyperliquid, scanned independently of the positional
+    // run_minutes/symbol args so existing invocations (./quant_day1.exe 3
+    // btcusdt) keep working unchanged with the default. Not positional
+    // itself since it was added after run_minutes/symbol were already
+    // established as argv[1]/argv[2] elsewhere (scripts, docs) — an order-
+    // independent flag avoids reshuffling those.
+    MarketDataSourceConfig source_cfg;
+    source_cfg.exchange = MarketDataSourceConfig::Exchange::Bybit;
+    for (int i = 1; i < argc; ++i) {
+        std::string_view arg = argv[i];
+        if (arg.starts_with("--source=")) {
+            std::string_view val = arg.substr(std::string_view("--source=").size());
+            if (val == "hyperliquid") {
+                source_cfg.exchange = MarketDataSourceConfig::Exchange::Hyperliquid;
+            } else if (val != "bybit") {
+                std::cerr << "[main] unknown --source=" << val << " (expected bybit|hyperliquid)\n";
+                return 1;
+            }
+        }
+    }
+    source_cfg.symbol = symbol;
+
+    std::cout << "[main] L2DataCapture  source="
+              << (source_cfg.exchange == MarketDataSourceConfig::Exchange::Hyperliquid ? "hyperliquid" : "bybit")
+              << "  symbol=" << symbol
               << "  run=" << run_minutes << "m\n";
 
     // FIX 3: Replaced ThreadQueue<Tick> with SpscRingBuffer<Tick, 1024>.
@@ -466,8 +504,8 @@ int main(int argc, char* argv[]) {
         // Self-configure for high performance
         configure_self_high_performance(CORE_PRODUCER, "ws_depth_thread");
         try {
-            WsClient client(depth_queue, g_stop, latency_, last_u);
-            client.run(symbol, "@depth@100ms");
+            auto client = make_market_data_source(source_cfg, depth_queue, g_stop, latency_, last_u);
+            client->run(Channel::Depth);
         } catch (const std::exception& e) {
             std::cerr << "[ws_depth_thread] fatal: " << e.what() << "\n";
 
@@ -481,8 +519,8 @@ int main(int argc, char* argv[]) {
         // Self-configure for high performance
         configure_self_high_performance(CORE_PRODUCER, "ws_trade_thread");
         try {
-            WsClient client(trade_queue, g_stop, latency_, last_u);
-            client.run(symbol, "@aggTrade");
+            auto client = make_market_data_source(source_cfg, trade_queue, g_stop, latency_, last_u);
+            client->run(Channel::Trades);
         } catch (const std::exception& e) {
             std::cerr << "[ws_trade_thread] fatal: " << e.what() << "\n";
             g_stop.store(true);
