@@ -89,8 +89,8 @@ export const STAGE_COLOR: Record<"parse" | "bookUpdate" | "publish", string> = {
 
 // uPlot axis styling shared by every chart (LatencyChart, StageLatencyChart,
 // DepthCurve) — kept here so no two charts can visually drift apart from
-// each other, matching the same discipline computeDepthLevels() applies to
-// the ladder/curve's numbers.
+// each other, matching the same discipline computeDepthLevelsBucketed()
+// applies to the ladder/curve's numbers.
 //
 // Refined in Phase 8.5's fourth pass — the previous version (solid grid,
 // visible tick marks, no defined axis edge) rendered fine but read as an

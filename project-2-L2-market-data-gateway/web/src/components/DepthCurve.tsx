@@ -3,10 +3,11 @@
 import { useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { computeDepthLevels } from "@/lib/orderBook";
+import { computeDepthLevelsBucketed, PRICE_BUCKET_OPTIONS } from "@/lib/orderBook";
 import { toPrice, toQty, type SnapshotRecord } from "@/lib/types";
 import { buildAxisStyle, useChartTheme, withAlpha } from "@/lib/chartTheme";
 import { LegendSwatch } from "./LegendSwatch";
+import { PriceBucketSelect } from "./PriceBucketSelect";
 
 const TICK_FONT = "10px JetBrains Mono, monospace"; // numbers: mono
 const LABEL_FONT = "10px Inter, sans-serif"; // axis captions: sans
@@ -23,34 +24,6 @@ interface DepthCurveProps {
   qtyDecimals?: number;
 }
 
-// Two options, not the earlier four (Phase 8.5's eighth pass): "Tick"
-// redraws directly as each snapshot arrives (no throttle at all — ms: 0 is
-// a sentinel meaning "skip the interval entirely", not a 0ms setInterval),
-// "1s" throttles to a fixed one-second cadence that's easier to watch by
-// eye than every individual tick.
-const TIMEFRAMES: { label: string; ms: number }[] = [
-  { label: "Tick", ms: 0 },
-  { label: "1s", ms: 1_000 },
-];
-const DEFAULT_TIMEFRAME_MS = 1_000;
-
-// Floor for the depth-level selector. Was 50 back when this fed Bybit's
-// export pipeline (up to 100 real levels/side) — now that Hyperliquid is
-// the only source, its l2Book channel is HARD-capped at exactly 20 levels
-// per side, confirmed directly against the live API (tried nSigFigs
-// 2 through 5 on both REST and WS: always exactly 20/20, regardless —
-// nSigFigs only changes price-aggregation granularity, never level count;
-// there is no deeper feed, WS or REST, native or dex-scoped). A floor of
-// 50 could never be reached, which is why the selector always collapsed
-// to a single misleadingly-labeled "50 levels" option showing only the
-// real ~20. Floor and step both lowered to fit the real ceiling. There's
-// still no hardcoded ceiling here: the selector's actual max always tracks
-// however many levels the live snapshot genuinely has (see
-// maxAvailableLevels below) — if Hyperliquid ever raises l2Book's own cap,
-// this grows to match with nothing here needing to change.
-const MIN_DEPTH_LEVELS = 5;
-const DEPTH_STEP = 5;
-
 // Fixes the gap at the spread by not leaving one at all instead of
 // shading/labeling it: both series get one shared bridging point exactly at
 // the bid/ask midpoint (a flat continuation of each side's own last real
@@ -60,13 +33,13 @@ const DEPTH_STEP = 5;
 // book never has bid == ask) — only the rendered boundary, and the
 // permanent "spot price" marker line, sit at their midpoint.
 //
-// maxLevels bounds how many real levels (nearest the spread first, on each
-// side) get plotted — the depth-level selector's value. Slicing happens
-// right after computeDepthLevels, same "closest to spread first" ordering
-// OrderBookLadder's own truncation already relies on.
+// bucketSize groups raw levels into price buckets before plotting (see
+// lib/orderBook.ts's computeDepthLevelsBucketed) — this naturally controls
+// how many points get plotted (coarser buckets -> fewer, wider steps), so
+// there's no separate level-count limit needed on top of it.
 function buildAlignedData(
   snapshot: SnapshotRecord,
-  maxLevels: number
+  bucketSize: number
 ): {
   data: uPlot.AlignedData;
   rawXs: number[];
@@ -77,9 +50,9 @@ function buildAlignedData(
   // in the exact array uPlot is rendering, so the two can't drift apart.
   bridgeIdx: number | null;
 } {
-  const full = computeDepthLevels(snapshot);
-  const bids = full.bids.slice(0, maxLevels);
-  const asks = full.asks.slice(0, maxLevels);
+  const full = computeDepthLevelsBucketed(snapshot, bucketSize);
+  const bids = full.bids;
+  const asks = full.asks;
   const bidsAscending = [...bids].reverse(); // ascending price, cumulative descends toward the spread
   const asksAscending = asks; // already ascending price, cumulative rises away from the spread
 
@@ -190,48 +163,17 @@ export function DepthCurve({
   // ladder) and should stay out of the way whenever the chart's own
   // crosshair already has it covered.
   const isSelfHoverRef = useRef(false);
-  const [timeframeMs, setTimeframeMs] = useState(DEFAULT_TIMEFRAME_MS);
-  const [throttledSnapshot, setThrottledSnapshot] = useState<SnapshotRecord | null>(null);
-  // Defaults to "show everything available" (effectiveDepthLevels below
-  // clamps this to whatever the live snapshot actually has) rather than
-  // the floor — with a real ceiling as shallow as Hyperliquid's 20/side,
-  // starting at the 5-level floor would show a quarter of the book by
-  // default, which reads as broken/incomplete rather than deliberately
-  // narrowed. A generously large sentinel keeps this correct even if a
-  // future source's real ceiling differs from today's 20.
-  const [depthLevels, setDepthLevels] = useState(1000);
-  const latestSnapshotRef = useRef<SnapshotRecord | null>(null);
+  // Finest option by default, matching OrderBookLadder's own default — see
+  // PriceBucketSelect's comment. Always renders the live snapshot directly
+  // now (the earlier Tick/1s throttle toggle is gone — the tween already
+  // smooths every update regardless of how often they arrive, so a
+  // separate client-side throttle wasn't adding anything the tween didn't
+  // already provide, just one more control to explain).
+  const [bucketSize, setBucketSize] = useState<number>(PRICE_BUCKET_OPTIONS[0]);
 
   useEffect(() => {
     onHoverPriceRef.current = onHoverPrice;
   }, [onHoverPrice]);
-  useEffect(() => {
-    latestSnapshotRef.current = snapshot;
-  }, [snapshot]);
-
-  // Tick mode (ms 0) skips this entirely and effectiveSnapshot below just
-  // uses the live prop directly. 1s mode pulls whatever the latest snapshot
-  // is on that cadence instead of redrawing on every individual push, and
-  // fires once immediately on selecting it so switching feels responsive
-  // rather than waiting a full second for the first redraw.
-  useEffect(() => {
-    if (timeframeMs <= 0) return;
-    setThrottledSnapshot(latestSnapshotRef.current);
-    const id = setInterval(() => setThrottledSnapshot(latestSnapshotRef.current), timeframeMs);
-    return () => clearInterval(id);
-  }, [timeframeMs]);
-
-  const effectiveSnapshot = timeframeMs <= 0 ? snapshot : (throttledSnapshot ?? snapshot);
-
-  // The selector's ceiling tracks whatever the live snapshot actually has —
-  // not a hardcoded number — so it grows on its own if the export pipeline
-  // ever carries more than 50/side again, with nothing here to update.
-  const maxAvailableLevels = Math.max(
-    effectiveSnapshot?.bids.length ?? MIN_DEPTH_LEVELS,
-    effectiveSnapshot?.asks.length ?? MIN_DEPTH_LEVELS,
-    MIN_DEPTH_LEVELS
-  );
-  const effectiveDepthLevels = Math.min(depthLevels, maxAvailableLevels);
 
   // Shared by the resize observer and the snapshot-update effect below —
   // repositions the permanent spot-price marker.
@@ -436,17 +378,17 @@ export function DepthCurve({
     // dark toggle needs this to actually rebuild with the new palette.
   }, [minHeight, priceDecimals, qtyDecimals, chartTheme]);
 
-  // New (possibly throttled) snapshot, OR a depth-selector change -> update
-  // the existing instance's data in place, tweening the cumulative-size
-  // bars from whatever's currently on screen to the new values instead of
-  // snapping (see TWEEN_MS/lookupFromValues above), and reposition the
-  // permanent spot-price line each frame since the marker's own pixel
-  // position depends on the plot's current data.
+  // New snapshot, OR a price-bucket change -> update the existing
+  // instance's data in place, tweening the cumulative-size bars from
+  // whatever's currently on screen to the new values instead of snapping
+  // (see TWEEN_MS/lookupFromValues above), and reposition the permanent
+  // spot-price line each frame since the marker's own pixel position
+  // depends on the plot's current data.
   useEffect(() => {
     const plot = plotRef.current;
-    if (!plot || !effectiveSnapshot) return;
+    if (!plot || !snapshot) return;
 
-    const { data, rawXs, bridgeIdx } = buildAlignedData(effectiveSnapshot, effectiveDepthLevels);
+    const { data, rawXs, bridgeIdx } = buildAlignedData(snapshot, bucketSize);
     rawXsRef.current = rawXs;
     bridgeIdxRef.current = bridgeIdx;
 
@@ -506,7 +448,7 @@ export function DepthCurve({
         tweenRafRef.current = null;
       }
     };
-  }, [effectiveSnapshot, effectiveDepthLevels]);
+  }, [snapshot, bucketSize]);
 
   // Ladder -> curve hover: draw a plain overlay line, never touching
   // uPlot's own cursor state (its own crosshair is driven by the mouse
@@ -532,7 +474,7 @@ export function DepthCurve({
     overlay.style.left = `${px}px`;
   }, [hoveredPrice]);
 
-  const hasData = !!effectiveSnapshot && (effectiveSnapshot.bids.length > 0 || effectiveSnapshot.asks.length > 0);
+  const hasData = !!snapshot && (snapshot.bids.length > 0 || snapshot.asks.length > 0);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-lg border border-border bg-panel p-2 shadow-sm">
@@ -541,8 +483,7 @@ export function DepthCurve({
           Depth curve
         </div>
         <div className="flex items-center gap-3">
-          <DepthLevelSelect value={effectiveDepthLevels} max={maxAvailableLevels} onChange={setDepthLevels} />
-          <TimeframeToggle value={timeframeMs} onChange={setTimeframeMs} />
+          <PriceBucketSelect value={bucketSize} onChange={setBucketSize} />
           <LegendSwatch color={chartTheme.bid} label="Bids" />
           <LegendSwatch color={chartTheme.ask} label="Asks" />
         </div>
@@ -567,47 +508,3 @@ export function DepthCurve({
   );
 }
 
-function DepthLevelSelect({ value, max, onChange }: { value: number; max: number; onChange: (n: number) => void }) {
-  // Options in DEPTH_STEP increments from MIN_DEPTH_LEVELS up to max — max
-  // itself always included even if it doesn't land on a round step, so
-  // "show everything available" is always one of the choices, not just
-  // whatever the nearest step happens to be.
-  const options: number[] = [];
-  for (let n = MIN_DEPTH_LEVELS; n < max; n += DEPTH_STEP) options.push(n);
-  options.push(max);
-
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(Number(e.target.value))}
-      title={`Levels per side shown, nearest the spread first (${MIN_DEPTH_LEVELS}–${max} available)`}
-      className="rounded border border-border bg-panel px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-foreground"
-    >
-      {options.map((n) => (
-        <option key={n} value={n}>
-          {n} levels
-        </option>
-      ))}
-    </select>
-  );
-}
-
-function TimeframeToggle({ value, onChange }: { value: number; onChange: (ms: number) => void }) {
-  return (
-    <div
-      className="flex overflow-hidden rounded border border-border text-[10px]"
-      title="How often the depth curve redraws: every tick, or once a second"
-    >
-      {TIMEFRAMES.map((tf) => (
-        <button
-          key={tf.label}
-          type="button"
-          onClick={() => onChange(tf.ms)}
-          className={`px-1.5 py-0.5 ${value === tf.ms ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
-        >
-          {tf.label}
-        </button>
-      ))}
-    </div>
-  );
-}

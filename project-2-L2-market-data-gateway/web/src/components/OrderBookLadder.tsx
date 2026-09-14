@@ -1,7 +1,11 @@
+"use client";
+
+import { useState } from "react";
 import { toPrice, toQty, type SnapshotRecord, type TimedTrade } from "@/lib/types";
-import { computeDepthLevels, type DepthLevel } from "@/lib/orderBook";
+import { computeDepthLevelsBucketed, PRICE_BUCKET_OPTIONS, type DepthLevel } from "@/lib/orderBook";
 import type { InstrumentConfig } from "@/lib/instruments";
 import { use24hChange, type Change24h } from "@/lib/use24hChange";
+import { PriceBucketSelect } from "./PriceBucketSelect";
 
 interface OrderBookLadderProps {
   snapshot: SnapshotRecord | null;
@@ -58,6 +62,12 @@ export function OrderBookLadder({
   // ordering rules don't allow a hook call to be skipped on some renders
   // (e.g. only once a snapshot exists) and not others.
   const change24h = use24hChange(instrument);
+  // Finest option by default — effectively "unaggregated" for most
+  // instruments (their own real tick size is already coarser than
+  // $0.001), so the default view matches what raw levels already looked
+  // like before this feature existed; coarser buckets are an explicit
+  // opt-in via the dropdown, matching Hyperliquid's own order-book UI.
+  const [bucketSize, setBucketSize] = useState<number>(PRICE_BUCKET_OPTIONS[0]);
 
   if (!snapshot || (snapshot.bids.length === 0 && snapshot.asks.length === 0)) {
     return (
@@ -67,7 +77,17 @@ export function OrderBookLadder({
     );
   }
 
-  const { bids: bidsWithTotal, asks: asksWithTotal } = computeDepthLevels(snapshot);
+  const { bids: bidsWithTotal, asks: asksWithTotal } = computeDepthLevelsBucketed(snapshot, bucketSize);
+
+  // Spread is a property of the REAL market, not of whatever bucket size
+  // is currently selected for display — computed from the raw snapshot's
+  // own best bid/ask, not the (possibly coarser) bucketed levels above.
+  const bestBidRaw = snapshot.bids[0]?.[0] ?? null;
+  const bestAskRaw = snapshot.asks[0]?.[0] ?? null;
+  const hasSpread = bestBidRaw != null && bestAskRaw != null;
+  const spread = hasSpread ? toPrice(bestAskRaw! - bestBidRaw!) : null;
+  const midPrice = hasSpread ? toPrice((bestBidRaw! + bestAskRaw!) / 2) : null;
+  const spreadPct = spread != null && midPrice ? (spread / midPrice) * 100 : null;
 
   // The ladder shows a fixed 12 rows/side regardless of how many levels the
   // export pipeline actually carries (bumped past 10 to smooth out the
@@ -80,9 +100,9 @@ export function OrderBookLadder({
   const asksDisplay = [...asksNearSpread].reverse(); // worst-to-best, top-to-bottom
 
   // Bar-width scaling relative to what's actually shown, not the full book
-  // depth — reusing computeDepthLevels' own maxTotal (from ALL real levels)
-  // here would make every visible bar look nearly empty once the export
-  // pipeline carries far more levels than the ladder displays.
+  // depth — reusing computeDepthLevelsBucketed's own maxTotal (from ALL real
+  // levels) here would make every visible bar look nearly empty once the
+  // export pipeline carries far more levels than the ladder displays.
   const maxTotal = Math.max(bidsNearSpread.at(-1)?.total ?? 0, asksNearSpread.at(-1)?.total ?? 0, 1);
 
   // Placeholders go at the outer edge (top for asks, bottom for bids) so
@@ -93,7 +113,7 @@ export function OrderBookLadder({
 
   return (
     <div className="flex h-full min-h-0 flex-col text-xs">
-      <LadderHeader />
+      <LadderHeader bucketSize={bucketSize} onBucketSizeChange={setBucketSize} />
       <div className="flex flex-1 min-h-0 flex-col justify-center overflow-hidden">
         {asksPadded.map((row, i) =>
           row ? (
@@ -111,6 +131,7 @@ export function OrderBookLadder({
             <PlaceholderRow key={`ask-empty-${i}`} />
           )
         )}
+        <SpreadRow spread={spread} spreadPct={spreadPct} priceDecimals={instrument.priceDecimals} />
         <TickerRow
           lastTrade={lastTrade}
           direction={lastTradeDirection}
@@ -138,12 +159,51 @@ export function OrderBookLadder({
   );
 }
 
-function LadderHeader() {
+// Price-bucket dropdown sits where the "Price" label used to be alone —
+// matching Hyperliquid's own order-book UI, which puts its equivalent
+// selector in this same top-left spot rather than as a separate control
+// row competing for vertical space.
+function LadderHeader({
+  bucketSize,
+  onBucketSizeChange,
+}: {
+  bucketSize: number;
+  onBucketSizeChange: (size: number) => void;
+}) {
   return (
-    <div className="grid grid-cols-3 gap-2 border-b border-border px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-      <span>Price</span>
-      <span className="text-right">Size</span>
-      <span className="text-right">Total</span>
+    <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+      <PriceBucketSelect
+        value={bucketSize}
+        onChange={onBucketSizeChange}
+        className="rounded border border-border bg-panel px-1 py-0.5 font-mono text-[10px] normal-case tabular-nums text-foreground"
+      />
+      <div className="flex flex-1 justify-end gap-6">
+        <span>Size</span>
+        <span>Total</span>
+      </div>
+    </div>
+  );
+}
+
+// Matches Hyperliquid's own order-book UI: a dedicated divider row for the
+// spread (absolute + %), right at the boundary between asks and bids —
+// alongside, not instead of, the existing last-trade/24h-change ticker
+// directly below it (see TickerRow's own comment for why that one exists).
+function SpreadRow({
+  spread,
+  spreadPct,
+  priceDecimals,
+}: {
+  spread: number | null;
+  spreadPct: number | null;
+  priceDecimals: number;
+}) {
+  if (spread == null || spreadPct == null) return null;
+  return (
+    <div className="flex items-center justify-center gap-3 border-t border-border bg-panel px-3 py-1 font-mono text-[10px] tabular-nums text-muted-foreground">
+      <span>Spread</span>
+      <span className="text-foreground">{spread.toFixed(priceDecimals)}</span>
+      <span className="text-foreground">{spreadPct.toFixed(3)}%</span>
     </div>
   );
 }
