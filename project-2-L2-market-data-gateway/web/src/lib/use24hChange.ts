@@ -14,41 +14,6 @@ export interface Change24h {
 
 const EMPTY: Change24h = { pcnt: null, lastPrice: null };
 
-// Bybit's public v5 ticker endpoint — category=linear to match what the C++
-// gateway actually subscribes to (src/bybit_adapter.cpp connects to
-// stream.bybit.com/v5/public/linear, USDT-margined perpetual futures, not
-// spot; querying category=spot here would silently show the wrong
-// instrument's 24h change). No API key needed, and it's genuinely
-// CORS-open for browser fetches (verified directly — the response reflects
-// Access-Control-Allow-Origin back to whatever origin asked).
-function bybitTickerUrl(symbol: string): string {
-  // Bybit's REST ticker rejects lowercase symbols outright (verified live:
-  // "params error: symbol invalid" for "btcusdt", 200 OK for "BTCUSDT") —
-  // instruments.ts's symbol field is lowercase to match the gateway CLI's
-  // own convention (which the WS side case-insensitively uppercases itself,
-  // see BybitAdapter::connect_and_read), so REST's stricter requirement is
-  // handled here, not by changing the shared config's casing.
-  return `https://api.bybit.com/v5/market/tickers?category=linear&symbol=${encodeURIComponent(symbol.toUpperCase())}`;
-}
-
-interface BybitTickerResponse {
-  result?: {
-    list?: { lastPrice?: string; price24hPcnt?: string }[];
-  };
-}
-
-async function fetchBybit24h(symbol: string): Promise<Change24h | null> {
-  const res = await fetch(bybitTickerUrl(symbol), { cache: "no-store" });
-  if (!res.ok) return null;
-  const data = (await res.json()) as BybitTickerResponse;
-  const entry = data.result?.list?.[0];
-  if (!entry) return null;
-  return {
-    pcnt: entry.price24hPcnt != null ? Number(entry.price24hPcnt) : null,
-    lastPrice: entry.lastPrice != null ? Number(entry.lastPrice) : null,
-  };
-}
-
 // Hyperliquid's metaAndAssetCtxs carries markPx + prevDayPx per instrument
 // in the SAME response used to ground the instrument shortlist itself
 // (see instruments.ts's header comment) — no separate ticker endpoint
@@ -59,6 +24,9 @@ async function fetchBybit24h(symbol: string): Promise<Change24h | null> {
 // already named with the full "xyz:CL"-style prefix, confirmed live, so
 // matching by the untouched symbol string works for both native and
 // dex-scoped instruments without separately stripping the prefix.
+//
+// (Bybit's REST ticker was used here before Bybit support was removed
+// entirely — see BUGS.md and instruments.ts's header comment.)
 const HYPERLIQUID_INFO_URL = "https://api.hyperliquid.xyz/info";
 
 interface HyperliquidAssetCtx {
@@ -108,10 +76,7 @@ export function use24hChange(instrument: InstrumentConfig): Change24h {
         isFirstPoll = false;
       }
       try {
-        const result =
-          instrument.source === "bybit"
-            ? await fetchBybit24h(instrument.symbol)
-            : await fetchHyperliquid24h(instrument.symbol);
+        const result = await fetchHyperliquid24h(instrument.symbol);
         if (cancelled || !result) return;
         setState(result);
       } catch {
@@ -128,7 +93,7 @@ export function use24hChange(instrument: InstrumentConfig): Change24h {
       cancelled = true;
       clearInterval(id);
     };
-  }, [instrument.source, instrument.symbol]);
+  }, [instrument.symbol]);
 
   return state;
 }

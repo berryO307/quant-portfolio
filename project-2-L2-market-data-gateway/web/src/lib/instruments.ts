@@ -8,29 +8,36 @@ import { RELAY_HEALTH_URL, RELAY_WS_URL } from "./config";
 // cash) were checked the same way and found to have zero volume/open
 // interest — dead listings, deliberately excluded here.
 //
+// Bybit was removed entirely (see market_data_source.hpp on the C++ side
+// and BUGS.md) — every instrument here is Hyperliquid. Kept as its own
+// list/type rather than folding into a single hardcoded symbol so a
+// second source can be added back here later without restructuring
+// anything downstream.
+//
 // Architecture: one gateway process per instrument (see the migration
 // prompt's "how the dropdown actually gets live data" section) — each
 // instrument here names its OWN relay WS/health endpoint, on its own port,
 // because each is expected to be served by its own independently-running
-// `quant_day1.exe --source=<x> <symbol>` + relay pair, not one process
-// multiplexing symbols. Selecting an instrument in the UI just switches
-// which relay endpoint the browser connects to (useRelayConnection already
-// reconnects whenever its wsUrl/healthUrl props change) — nothing here
-// reconfigures a running gateway. An instrument whose gateway/relay isn't
-// currently running just shows the existing "feed unavailable" state
-// (FeedStatusBanner) rather than erroring.
+// `quant_day1.exe <symbol>` + relay pair, not one process multiplexing
+// symbols. Selecting an instrument in the UI just switches which relay
+// endpoint the browser connects to (useRelayConnection already reconnects
+// whenever its wsUrl/healthUrl props change) — nothing here reconfigures a
+// running gateway. An instrument whose gateway/relay isn't currently
+// running just shows the existing "feed unavailable" state
+// (FeedStatusBanner) rather than erroring — see BUGS.md for why that's
+// expected unless a capture + replay-gateway is actually running for it
+// (there is currently no live gateway->relay push client at all; "live" so
+// far has always meant a captured session replayed with --loop).
 //
 // priceDecimals/qtyDecimals: DISPLAY precision only — the wire scale
 // (PRICE_SCALE=10000, QTY_SCALE=1000 in lib/types.ts) is fixed and
-// identical for every instrument regardless of source; what varies here is
-// how many decimal places make sense to actually show for an instrument
-// whose price magnitude ranges from ~1 (XRP) to ~77,000 (BTC).
+// identical for every instrument; what varies here is how many decimal
+// places make sense to actually show for an instrument whose price
+// magnitude ranges from ~1 (XRP) to ~77,000 (BTC).
 export interface InstrumentConfig {
   id: string;
   label: string;
-  source: "bybit" | "hyperliquid";
-  // Gateway/wire symbol: Bybit takes "btcusdt"-style; Hyperliquid takes a
-  // native coin ("BTC") or a builder-deployed sub-dex coin ("xyz:CL") —
+  // A native coin ("BTC") or a builder-deployed sub-dex coin ("xyz:CL") —
   // both subscribe identically over Hyperliquid's WS (confirmed live).
   symbol: string;
   relayWsUrl: string;
@@ -40,12 +47,12 @@ export interface InstrumentConfig {
 }
 
 // Sequential local ports starting from the project's existing default
-// (8080, Bybit BTCUSDT — unchanged, so NEXT_PUBLIC_RELAY_WS_URL/
-// NEXT_PUBLIC_RELAY_HEALTH_URL continue to override that one instrument
-// exactly as before this feature existed). The rest are fixed localhost
-// ports, not individually env-overridable — this is a local multi-instrument
-// dev/demo tool, not a deployment with N independently configurable prod
-// endpoints.
+// (8080 — previously Bybit BTCUSDT, now BTC via Hyperliquid, so
+// NEXT_PUBLIC_RELAY_WS_URL/NEXT_PUBLIC_RELAY_HEALTH_URL continue to
+// override that one default instrument). The rest are fixed localhost
+// ports, not individually env-overridable — this is a local
+// multi-instrument dev/demo tool, not a deployment with N independently
+// configurable prod endpoints.
 function relayUrls(port: number, overrideWs?: string, overrideHealth?: string) {
   return {
     relayWsUrl: overrideWs ?? `ws://localhost:${port}/live`,
@@ -55,74 +62,58 @@ function relayUrls(port: number, overrideWs?: string, overrideHealth?: string) {
 
 export const INSTRUMENTS: InstrumentConfig[] = [
   {
-    id: "btc-bybit",
-    label: "BTC/USDT (Bybit)",
-    source: "bybit",
-    symbol: "btcusdt",
-    ...relayUrls(8080, RELAY_WS_URL, RELAY_HEALTH_URL),
-    priceDecimals: 2,
-    qtyDecimals: 3,
-  },
-  {
     id: "btc-hl",
     label: "BTC (Hyperliquid)",
-    source: "hyperliquid",
     symbol: "BTC",
-    ...relayUrls(8081),
+    ...relayUrls(8080, RELAY_WS_URL, RELAY_HEALTH_URL),
     priceDecimals: 2,
     qtyDecimals: 3,
   },
   {
     id: "eth-hl",
     label: "ETH (Hyperliquid)",
-    source: "hyperliquid",
     symbol: "ETH",
-    ...relayUrls(8082),
+    ...relayUrls(8081),
     priceDecimals: 2,
     qtyDecimals: 3,
   },
   {
     id: "sol-hl",
     label: "SOL (Hyperliquid)",
-    source: "hyperliquid",
     symbol: "SOL",
-    ...relayUrls(8083),
+    ...relayUrls(8082),
     priceDecimals: 3,
     qtyDecimals: 2,
   },
   {
     id: "xrp-hl",
     label: "XRP (Hyperliquid)",
-    source: "hyperliquid",
     symbol: "XRP",
-    ...relayUrls(8084),
+    ...relayUrls(8083),
     priceDecimals: 4,
     qtyDecimals: 1,
   },
   {
     id: "hype-hl",
     label: "HYPE (Hyperliquid)",
-    source: "hyperliquid",
     symbol: "HYPE",
-    ...relayUrls(8085),
+    ...relayUrls(8084),
     priceDecimals: 3,
     qtyDecimals: 2,
   },
   {
     id: "wti-hl",
     label: "WTI Crude Oil (Hyperliquid xyz)",
-    source: "hyperliquid",
     symbol: "xyz:CL",
-    ...relayUrls(8086),
+    ...relayUrls(8085),
     priceDecimals: 3,
     qtyDecimals: 2,
   },
   {
     id: "brent-hl",
     label: "Brent Crude Oil (Hyperliquid xyz)",
-    source: "hyperliquid",
     symbol: "xyz:BRENTOIL",
-    ...relayUrls(8087),
+    ...relayUrls(8086),
     priceDecimals: 3,
     qtyDecimals: 2,
   },

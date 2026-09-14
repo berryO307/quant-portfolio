@@ -157,9 +157,10 @@ function LadderHeader() {
 //
 // The bare price on its own was reported as "vague" — no sense of whether
 // it's high, low, or ordinary for the instrument. The 24h change (from
-// Bybit's public REST ticker — see lib/use24hChange.ts, a separate,
-// unrelated data source from the live tick/book/trade feed) gives it that
-// context, in brackets, exactly like an actual exchange ticker would.
+// Hyperliquid's public REST info endpoint — see lib/use24hChange.ts, a
+// separate, unrelated data source from the live tick/book/trade feed)
+// gives it that context, in brackets, exactly like an actual exchange
+// ticker would.
 function TickerRow({
   lastTrade,
   direction,

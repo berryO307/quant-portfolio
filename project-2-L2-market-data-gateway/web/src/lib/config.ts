@@ -16,5 +16,6 @@ export const RELAY_HEALTH_URL =
 // symbol-agnostic) — so lib/instruments.ts's INSTRUMENTS list is a
 // standalone assumption that must be kept in sync with whichever gateway
 // process is actually feeding each relay port. RELAY_WS_URL/
-// RELAY_HEALTH_URL above configure ONLY the first (Bybit BTCUSDT) entry in
-// that list — the rest use fixed localhost ports (see instruments.ts).
+// RELAY_HEALTH_URL above configure ONLY the first (BTC via Hyperliquid,
+// the default instrument) entry in that list — the rest use fixed
+// localhost ports (see instruments.ts).

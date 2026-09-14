@@ -18,19 +18,22 @@ All three are read at build/runtime by the browser bundle, so they must be prefi
 
 | Variable | Default (local dev) | Description |
 | --- | --- | --- |
-| `NEXT_PUBLIC_RELAY_WS_URL` | `ws://localhost:8080/live` | The relay's browser-facing WebSocket endpoint for the FIRST instrument dropdown entry (BTC/USDT via Bybit) only. Use `wss://` for a production relay behind TLS. |
+| `NEXT_PUBLIC_RELAY_WS_URL` | `ws://localhost:8080/live` | The relay's browser-facing WebSocket endpoint for the FIRST instrument dropdown entry (BTC via Hyperliquid) only. Use `wss://` for a production relay behind TLS. |
 | `NEXT_PUBLIC_RELAY_HEALTH_URL` | `http://localhost:8080/health` | Matching health endpoint, polled every 5s by `FeedStatusBanner`. |
 
 The rest of the instrument dropdown (`lib/instruments.ts`) targets fixed
-localhost ports (8081-8087), not individually env-overridable — this is a
+localhost ports (8081-8086), not individually env-overridable — this is a
 local multi-instrument dev/demo tool, not a deployment with N configurable
-prod endpoints. Each entry needs its own `quant_day1.exe --source=<bybit|
-hyperliquid> <symbol>` + relay pair running on its assigned port before its
-dropdown entry shows live data; an instrument whose gateway isn't running
-just shows the existing "feed unavailable" state. Each instrument also
-carries its own 24h-change data source (Bybit's public REST ticker, or
-Hyperliquid's `metaAndAssetCtxs` markPx/prevDayPx — see `lib/use24hChange.ts`)
-and its own display decimal precision (`priceDecimals`/`qtyDecimals`) — the
+prod endpoints. Each entry needs its own `quant_day1.exe <symbol>` + relay
+pair running on its assigned port before its dropdown entry shows live
+data; an instrument whose gateway isn't running just shows the existing
+"feed unavailable" state (see the project's BUGS.md — there is currently
+no live gateway->relay push client, so "live" means a captured session
+replayed with `replay-gateway.mjs --loop`, same as every instrument so
+far). Each instrument also carries its own 24h-change figure (Hyperliquid's
+`metaAndAssetCtxs` markPx/prevDayPx — see `lib/use24hChange.ts`; Bybit
+support, including its REST ticker, was removed entirely) and its own
+display decimal precision (`priceDecimals`/`qtyDecimals`) — the
 wire protocol itself carries no symbol field, so nothing in the pipeline
 would catch a gateway/dropdown-entry mismatch; keep `lib/instruments.ts` in
 sync with whichever gateway process is actually feeding each port.
