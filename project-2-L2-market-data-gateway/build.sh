@@ -19,7 +19,7 @@ DEFINES="
   -DSIMDJSON_THREADS_ENABLED=1 -DSIMDJSON_USING_WINDOWS_DYNAMIC_LIBRARY=1
   -D_WIN32_WINNT=0x0A00"
 INCS="-I$ROOT/include -IC:/msys64/mingw64/include"
-FLAGS="-O2 -std=gnu++17 -Wall -Wextra"
+FLAGS="-O2 -std=gnu++20 -Wall -Wextra"
 
 OBJS=""
 for f in main order_book rest_client ws_client; do
@@ -30,6 +30,12 @@ for f in main order_book rest_client ws_client; do
 done
 
 echo "  AR  objects.a"
+# ar's `q` (quick append) does not replace existing members of an archive
+# that's already there from a previous build — it appends alongside them,
+# so a second run without a manual clean produced duplicate-symbol link
+# errors for every single object file. Removing the stale archive first
+# guarantees `ar qc` always builds a fresh one.
+rm -f "$BUILD/CMakeFiles/quant_day1.dir/objects.a"
 ar.exe qc "$BUILD/CMakeFiles/quant_day1.dir/objects.a" $OBJS
 
 echo "  LD  quant_day1.exe"
