@@ -22,7 +22,7 @@ export interface SnapshotRecord {
   tsc: number;
   // Ordered best-price-first: bids descending (best/highest first), asks
   // ascending (best/lowest first) — see OrderBook::top_bids/top_asks.
-  // At most EXPORT_SNAPSHOT_DEPTH (10) levels per side, refreshed ~1/s —
+  // At most EXPORT_SNAPSHOT_DEPTH (100) levels per side, refreshed ~1/s —
   // this is the only order-book state the pipeline pushes; there is no
   // per-tick full-depth feed upstream of this.
   bids: [number, number][];

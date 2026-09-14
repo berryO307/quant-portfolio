@@ -13,7 +13,12 @@ const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_MULT = 2;
 
 const HEALTH_POLL_MS = 5_000;
-const MAX_TRADES = 200;
+// Trimmed from 200 (Phase 8.5's third pass): TradesTape no longer scrolls —
+// it renders a fixed number of rows that fit its container and shows only
+// the newest ones, so retaining far more than that in memory just meant an
+// array nothing downstream ever looked past the first screenful of. 60 is
+// comfortably more than any realistic tape height needs.
+const MAX_TRADES = 60;
 
 // Matches the default used everywhere else this gap shows up (reader.py,
 // export_summary.py, relay/src/bybitIngestClient.ts) — used only until a

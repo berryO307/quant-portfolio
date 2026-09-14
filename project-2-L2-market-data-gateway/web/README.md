@@ -14,12 +14,13 @@ Open http://localhost:3000. To see live data, also run the relay and its fake-ga
 
 ## Environment variables
 
-Both are read at build/runtime by the browser bundle, so they must be prefixed `NEXT_PUBLIC_` and are **not secret** — anyone can read them from the page source. Don't put the relay's `INGEST_TOKEN` here; that's a gateway→relay secret, this app never needs it.
+All three are read at build/runtime by the browser bundle, so they must be prefixed `NEXT_PUBLIC_` and are **not secret** — anyone can read them from the page source. Don't put the relay's `INGEST_TOKEN` here; that's a gateway→relay secret, this app never needs it.
 
 | Variable | Default (local dev) | Description |
 | --- | --- | --- |
 | `NEXT_PUBLIC_RELAY_WS_URL` | `ws://localhost:8080/live` | The relay's browser-facing WebSocket endpoint. Use `wss://` for a production relay behind TLS. |
 | `NEXT_PUBLIC_RELAY_HEALTH_URL` | `http://localhost:8080/health` | The relay's health endpoint, polled every 5s by `FeedStatusBanner`. |
+| `NEXT_PUBLIC_TICKER_SYMBOL` | `BTCUSDT` | Instrument the order-book ticker's 24h-change figure is fetched for, directly from Bybit's public REST API (unrelated to the relay feed — see `lib/use24hChange.ts`). Must match whatever symbol the C++ gateway is actually capturing (`src/main.cpp`'s `argv[2]`, default `btcusdt`) — the wire protocol itself carries no symbol field, so nothing else in the pipeline would catch a mismatch. |
 
 ## Deploying to Vercel
 

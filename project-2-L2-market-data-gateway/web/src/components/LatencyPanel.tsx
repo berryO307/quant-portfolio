@@ -3,7 +3,9 @@
 import { useMemo, useRef, useState } from "react";
 import type { HistoricalSummary, LiveSample, TailEvent } from "@/lib/types";
 import { computeLiveTailEvents, tailEventsFromHistorical } from "@/lib/tailAttribution";
+import { COLOR_BID, COLOR_BOOK_UPDATE, COLOR_JITTER, COLOR_PARSE } from "@/lib/theme";
 import { LatencyChart, type LatencyPoint } from "./LatencyChart";
+import { StageLatencyChart, type StagePoint } from "./StageLatencyChart";
 import { TailEventsFeed } from "./TailEventsFeed";
 import { StageBreakdown } from "./StageBreakdown";
 
@@ -11,6 +13,7 @@ type Mode = "live" | "historical";
 
 interface LatencyPanelProps {
   recentSamples: LiveSample[];
+  cpuGhz: number; // for LatencyChart's elapsed-time x-axis (live mode)
 }
 
 function isHistoricalSummary(value: unknown): value is HistoricalSummary {
@@ -25,7 +28,7 @@ function isHistoricalSummary(value: unknown): value is HistoricalSummary {
 // the relay (see Phase 7), so a client-side file picker is the only piece
 // of infrastructure this needs. Live mode subscribes to the same rolling
 // sample buffer useRelayConnection already maintains.
-export function LatencyPanel({ recentSamples }: LatencyPanelProps) {
+export function LatencyPanel({ recentSamples, cpuGhz }: LatencyPanelProps) {
   const [mode, setMode] = useState<Mode>("live");
   const [historical, setHistorical] = useState<HistoricalSummary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -87,11 +90,22 @@ export function LatencyPanel({ recentSamples }: LatencyPanelProps) {
         }))
       : tailEvents.map((e) => ({ x: e.tRecvTsc, latencyNs: e.latencyNs, attribution: e.attribution }));
 
+  const chartCpuGhz = mode === "live" ? cpuGhz : (historical?.session.cpu_ghz_used ?? cpuGhz);
+
   const selectedEvent = tailEvents.find((e) => e.key === selectedKey) ?? null;
 
+  // Per-stage mini charts (Phase 8.5's fourth pass) — only meaningful in
+  // live mode: a loaded summary.json only carries stage_ns for its sparse
+  // tail_events, not the full per-sample series these need to plot anything
+  // resembling a real distribution.
+  const parsePoints: StagePoint[] = recentSamples.map((s) => ({ x: s.tRecvTsc, valueNs: s.parseNs }));
+  const bookUpdatePoints: StagePoint[] = recentSamples.map((s) => ({ x: s.tRecvTsc, valueNs: s.bookUpdateNs }));
+  const publishPoints: StagePoint[] = recentSamples.map((s) => ({ x: s.tRecvTsc, valueNs: s.publishNs }));
+  const jitterPoints: StagePoint[] = recentSamples.map((s) => ({ x: s.tRecvTsc, valueNs: s.hostJitterNs }));
+
   return (
-    <div className="flex h-full flex-col font-mono text-xs">
-      <div className="flex items-center gap-3 border-b border-[#30363d] px-3 py-1.5">
+    <div className="flex h-full flex-col text-xs">
+      <div className="flex items-center gap-3 border-b border-border px-3 py-1.5">
         <ModeToggle mode={mode} onChange={setMode} disabled={!historical} />
         <input
           ref={fileInputRef}
@@ -107,28 +121,76 @@ export function LatencyPanel({ recentSamples }: LatencyPanelProps) {
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
-          className="rounded border border-[#30363d] px-2 py-0.5 text-[#c9d1d9] hover:bg-[#161b22]"
+          className="rounded border border-border px-2 py-0.5 text-foreground hover:bg-accent"
         >
-          load summary.json
+          Load summary.json
         </button>
         {loadError && <span className="text-[#f85149]">{loadError}</span>}
         {mode === "historical" && (
-          <span className="text-[#8b949e]">
-            historical: tail events only, {historical?.session.n_samples.toLocaleString()} samples captured
+          <span className="text-muted-foreground">
+            Historical: tail events only, {historical?.session.n_samples.toLocaleString()} samples captured
           </span>
         )}
       </div>
 
-      <div className="grid min-h-0 flex-1 grid-cols-[2fr_1fr] divide-x divide-[#30363d] overflow-hidden">
-        <div className="flex min-h-0 flex-col overflow-hidden">
-          <div className="p-2">
-            <LatencyChart points={points} refLines={refLines} />
+      {/* Phase 8.5's fourth pass: replaced the single combined scatter with
+          an overview chart plus one small chart per pipeline stage, instead
+          of overlaying everything on one shared axis. This is naturally
+          taller than one chart, so the whole cluster scrolls as a unit
+          rather than trying to compress five charts, the tail feed, and the
+          drill-down into a fixed height. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2">
+        <LatencyChart
+          title="Total latency"
+          description={
+            mode === "live"
+              ? "End-to-end latency (receipt to publish) for every live sample this session, colored by whichever stage — or host jitter — is the dominant cause when a sample crosses the tail (p99.9) threshold."
+              : `End-to-end latency from a loaded historical session (${historical?.session.path ?? "loaded file"}) — tail events only, since a summary.json doesn't retain the full sample population.`
+          }
+          points={points}
+          refLines={refLines}
+          cpuGhz={chartCpuGhz}
+        />
+
+        {mode === "live" && (
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <StageLatencyChart
+              title="Parse stage"
+              description="Time to parse the raw exchange message into a normalized tick."
+              color={COLOR_PARSE}
+              points={parsePoints}
+              cpuGhz={cpuGhz}
+            />
+            <StageLatencyChart
+              title="Book-update stage"
+              description="Time to apply the parsed tick to the in-memory order book."
+              color={COLOR_BOOK_UPDATE}
+              points={bookUpdatePoints}
+              cpuGhz={cpuGhz}
+            />
+            <StageLatencyChart
+              title="Publish stage"
+              description="Time to publish the updated tick downstream, after the book update."
+              color={COLOR_BID}
+              points={publishPoints}
+              cpuGhz={cpuGhz}
+            />
+            <StageLatencyChart
+              title="Host jitter"
+              description="OS scheduling noise measured by a dedicated canary thread — not part of the pipeline's own work, but it can still delay a sample."
+              color={COLOR_JITTER}
+              points={jitterPoints}
+              cpuGhz={cpuGhz}
+            />
           </div>
-          <div className="min-h-0 flex-1 overflow-hidden border-t border-[#30363d]">
-            <TailEventsFeed tailEvents={tailEvents} selectedKey={selectedKey} onSelect={(e) => setSelectedKey(e.key)} />
-          </div>
+        )}
+
+        <div className="max-h-[220px] min-h-[72px] flex-none overflow-y-auto rounded-md border border-border">
+          <TailEventsFeed tailEvents={tailEvents} selectedKey={selectedKey} onSelect={(e) => setSelectedKey(e.key)} />
         </div>
-        <StageBreakdown event={selectedEvent} stageMedians={stageMedians} />
+        <div className="flex-none rounded-md border border-border">
+          <StageBreakdown event={selectedEvent} stageMedians={stageMedians} />
+        </div>
       </div>
     </div>
   );
@@ -148,19 +210,19 @@ function ModeToggle({
       <button
         type="button"
         onClick={() => onChange("live")}
-        className={`rounded px-2 py-0.5 ${mode === "live" ? "bg-[#238636] text-white" : "text-[#8b949e] hover:bg-[#161b22]"}`}
+        className={`rounded px-2 py-0.5 ${mode === "live" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"}`}
       >
-        live
+        Live
       </button>
       <button
         type="button"
         disabled={disabled}
         onClick={() => onChange("historical")}
         className={`rounded px-2 py-0.5 disabled:opacity-40 ${
-          mode === "historical" ? "bg-[#238636] text-white" : "text-[#8b949e] hover:bg-[#161b22]"
+          mode === "historical" ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"
         }`}
       >
-        historical
+        Historical
       </button>
     </div>
   );
