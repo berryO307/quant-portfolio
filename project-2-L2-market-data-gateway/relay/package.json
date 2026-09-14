@@ -10,7 +10,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test src/**/*.test.ts",
-    "fake-gateway": "node scripts/fake-gateway.mjs"
+    "fake-gateway": "node scripts/fake-gateway.mjs",
+    "replay-gateway": "node scripts/replay-gateway.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

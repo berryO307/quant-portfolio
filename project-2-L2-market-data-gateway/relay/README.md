@@ -12,6 +12,18 @@ npm run fake-gateway      # in a second terminal — simulates the C++ gateway's
 
 `scripts/fake-gateway.mjs` speaks the exact same wire protocol a real gateway push client would (hello handshake, then sample/snapshot/trade records) — it's what the [web viewer](../web/README.md) can be developed against without running the full C++ capture stack. Pass a port as an argument (`npm run fake-gateway -- 8091`) to match a relay started on a non-default port, and set `INGEST_TOKEN` to match if the relay is running with one configured (see below).
 
+### Replaying a real captured session
+
+`scripts/replay-gateway.mjs` is `fake-gateway.mjs`'s counterpart for real data: it reads a session the C++ gateway actually captured (`data/export/session_*.ndjson.gz`, written by `ColdPathExporter` — see `include/export_pipeline.hpp`) and streams it to `/ingest` at real-time pace, so the web viewer shows genuine captured market activity instead of synthetic data, with no changes needed anywhere else in the pipeline (the exported record shapes already match the wire protocol exactly).
+
+```bash
+npm run replay-gateway -- ../data/export/session_<timestamp>.ndjson.gz 8080 <cpu_ghz> --loop
+```
+
+`<cpu_ghz>` must be the value the *capture itself* printed at startup (`Calibrated Host TSC Frequency: X GHz`) — every stage-latency number downstream depends on converting that specific session's raw TSC deltas with the frequency they were actually recorded at, not a guessed or default one.
+
+Without `--loop`, this does exactly one real-time pass through the file and then disconnects (matching a real gateway session ending) — for a 3-minute capture, that means the web viewer shows "Live feed unavailable" again after 3 real minutes, with nothing wrong. `--loop` re-runs the same pass indefinitely instead (re-sending the same `hello` each time, the same way a real gateway reconnecting would), which is almost always what you actually want for a standing local data source.
+
 ## Environment variables
 
 | Variable | Default | Description |

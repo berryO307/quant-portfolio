@@ -26,25 +26,61 @@ gw.on("open", () => {
   // t_last_export_snapshot timer) — resend periodically, not just once, so
   // a browser client connecting later still sees one within ~1s instead of
   // only whenever the gateway happens to have sent its one-shot snapshot.
+  //
+  // The book itself used to be a hardcoded constant — same 6 levels,
+  // forever. Fine for wiring up the pipe, but it meant the depth curve
+  // (and the "current price" ticker) could never look alive, which made a
+  // real UI bug (Phase 8.5) look like a data bug too. A small random walk
+  // on the mid-price plus per-level size jitter keeps it a stub — nobody
+  // should mistake this for real market data — while actually moving.
+  const TICK = 10_000; // PRICE_SCALE-native — $1.00 per level (types.hpp)
+  const LEVELS = 6;
+  let midPriceTicks = 425_000_000;
+
+  function buildLevels(direction) {
+    // direction: -1 for bids (descending from one tick below mid),
+    // +1 for asks (ascending from one tick above mid) — leaves room for a
+    // visible spread instead of the two sides touching at the mid price.
+    const levels = [];
+    let price = midPriceTicks + direction * TICK;
+    for (let i = 0; i < LEVELS; i++) {
+      const size = Math.max(500, Math.round(3000 + (Math.random() - 0.5) * 4000));
+      levels.push([price, size]);
+      price += direction * TICK;
+    }
+    return levels;
+  }
+
   setInterval(() => {
+    // Mostly drifts by zero or one tick per second; occasionally two, so
+    // the walk doesn't feel perfectly uniform.
+    const step = Math.round((Math.random() - 0.5) * 2.4) * TICK;
+    midPriceTicks += step;
+
     gw.send(JSON.stringify({
       type: "snapshot",
       tsc: Date.now(),
-      bids: [[425000000, 12000], [424990000, 8000], [424980000, 5000]],
-      asks: [[425010000, 9000], [425020000, 6000], [425030000, 15000]],
+      bids: buildLevels(-1),
+      asks: buildLevels(1),
     }));
   }, 1000);
 
+  // Was a fixed 5-price sawtooth with unboundedly growing size (tradeId*10,
+  // forever) — deterministic and, past a few minutes, absurd-looking.
+  // Trades now print near the same moving mid-price the book uses, with a
+  // bounded, randomized size.
   let tradeId = 0;
   setInterval(() => {
     tradeId++;
+    const side = Math.random() < 0.5 ? "bid" : "ask";
+    const priceJitter = Math.round((Math.random() - 0.5) * 2) * TICK;
     gw.send(JSON.stringify({
       type: "trade",
       tsc: 1_000_000_000 + tradeId * 1000,
-      price: 425000000 + (tradeId % 5) * 1000,
-      qty: 500 + tradeId * 10,
+      price: midPriceTicks + priceJitter,
+      qty: Math.max(100, Math.round(2000 + (Math.random() - 0.5) * 3000)),
       trade_id: tradeId,
-      side: tradeId % 2 === 0 ? "bid" : "ask",
+      side,
     }));
   }, 300);
 
