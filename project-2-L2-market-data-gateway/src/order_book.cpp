@@ -6,19 +6,20 @@
 #include <bit>
 
 // Anchors the ladder to a mid price so both sides share the same index space — called once on snapshot, never on the hot path
-void PriceLadder::init(int64_t mid_price_ticks) {
+void PriceLadder::init(int64_t mid_price_ticks, int64_t tick_step_in) {
     clear();
-    //Force the mid price to perfectly align with TICK_STEP
-    int64_t aligned_mid = (mid_price_ticks / TICK_STEP) * TICK_STEP;
+    tick_step = tick_step_in;
+    //Force the mid price to perfectly align with tick_step
+    int64_t aligned_mid = (mid_price_ticks / tick_step) * tick_step;
     // Center the ladder on the snapshot mid price; ensures we can represent a symmetric range above and below the mid, which is ideal for book updates that typically cluster around the top of book.
-    base_price = aligned_mid - ((MAX_LEVELS / 2) * TICK_STEP);
+    base_price = aligned_mid - ((MAX_LEVELS / 2) * tick_step);
 }
 
 // Direct index write; O(1), no allocation, no tree rebalance; returns false if price falls outside the ladder window
-// Uses explicit error return instead of exceptions—throwing would trigger 
+// Uses explicit error return instead of exceptions—throwing would trigger
 // stack unwinding (destructors + frame walk), causing unpredictable latency in this hot path.
 bool PriceLadder::set(int64_t price_ticks, int64_t qty) {
-    int64_t idx = (price_ticks - base_price) / TICK_STEP; // Convert price to ladder index
+    int64_t idx = (price_ticks - base_price) / tick_step; // Convert price to ladder index
     if (static_cast<uint64_t>(idx) >= static_cast<uint64_t>(MAX_LEVELS)){
         // Log out-of-range errors for visibility, but don't throw exceptions from this hot path
         std::cerr << "[PriceLadder] Error: price " << price_ticks 
@@ -51,7 +52,7 @@ bool PriceLadder::set(int64_t price_ticks, int64_t qty) {
 
 // Direct index read; O(1); returns 0 for out-of-range prices, consistent with empty-slot semantics
 int64_t PriceLadder::get(int64_t price_ticks) const {
-    int64_t idx = (price_ticks - base_price) / TICK_STEP; // Convert price to ladder index
+    int64_t idx = (price_ticks - base_price) / tick_step; // Convert price to ladder index
     // Unsigned cast wraps negatives to huge positives, collapsing two comparisons into one branch
     if (static_cast<uint64_t>(idx) >= MAX_LEVELS) return 0;
     return qtys[idx];
@@ -78,7 +79,7 @@ int64_t PriceLadder::get_best_ask() const {
             int l1_bit = __builtin_ctzll(L1[l1_chunk]);
             
             int64_t idx = (l1_chunk * 64) + l1_bit;
-            return base_price + idx * TICK_STEP; // Convert ladder index back to price
+            return base_price + idx * tick_step; // Convert ladder index back to price
         }
     }
     return 0; // Book is empty
@@ -97,7 +98,7 @@ int64_t PriceLadder::get_best_bid() const {
             int l1_bit = 63 - __builtin_clzll(L1[l1_chunk]);
             
             int64_t idx = (l1_chunk * 64) + l1_bit;
-            return base_price + idx * TICK_STEP; // Convert ladder index back to price
+            return base_price + idx * tick_step; // Convert ladder index back to price
         }
     }
     return 0; // Book is empty
@@ -122,7 +123,7 @@ int PriceLadder::top_n(PriceLevel* out, int max_n, bool from_high) const {
                 while (l1_word != 0 && count < max_n) {
                     int bit_pos = 63 - __builtin_clzll(l1_word);
                     int64_t idx = (l1_chunk * 64) + bit_pos;
-                    out[count++] = PriceLevel{ base_price + idx * TICK_STEP, qtys[idx] };
+                    out[count++] = PriceLevel{ base_price + idx * tick_step, qtys[idx] };
                     l1_word &= ~(uint64_t(1) << bit_pos);
                 }
                 l2_word &= ~(uint64_t(1) << l2_bit);
@@ -139,7 +140,7 @@ int PriceLadder::top_n(PriceLevel* out, int max_n, bool from_high) const {
                 while (l1_word != 0 && count < max_n) {
                     int bit_pos = __builtin_ctzll(l1_word);
                     int64_t idx = (l1_chunk * 64) + bit_pos;
-                    out[count++] = PriceLevel{ base_price + idx * TICK_STEP, qtys[idx] };
+                    out[count++] = PriceLevel{ base_price + idx * tick_step, qtys[idx] };
                     l1_word &= ~(uint64_t(1) << bit_pos);
                 }
                 l2_word &= ~(uint64_t(1) << l2_bit);
@@ -149,6 +150,46 @@ int PriceLadder::top_n(PriceLevel* out, int max_n, bool from_high) const {
 
     return count;
 }
+
+namespace {
+
+// Ladder index granularity for this snapshot: the finest tick_step that
+// still can't collide any two DISTINCT prices actually present in it. A
+// fixed-at-BTCUSDT's-0.1-USDT step was the root cause of the ladder
+// collision bug above (see PriceLadder's comment) — inferring it fresh
+// from each snapshot's own data means every instrument (BTC, XRP, WTI
+// crude, whatever else this gateway ever points at) gets a correct,
+// self-adjusting granularity with zero per-symbol configuration.
+//
+// Cold path only (called once per seed(), i.e. once per snapshot — up to
+// ~1/s for Bybit, more frequent for Hyperliquid's always-full-snapshot
+// l2Book, but still nowhere near the hot per-tick delta-apply path), so an
+// O(n) scan over a snapshot's ~20-200 levels costs nothing that matters.
+//
+// Clamped to [1, 1000]: never finer than PRICE_SCALE's own raw precision
+// (1 = 0.0001 USDT), and never coarser than the original hardcoded
+// constant (1000 = 0.1 USDT) — so BTCUSDT, whose real gaps are already
+// >=1000, infers exactly 1000 and behaves identically to before this
+// change.
+int64_t infer_tick_step(const std::vector<PriceLevel>& bids, const std::vector<PriceLevel>& asks) {
+    constexpr int64_t kDefaultMax = 1000;
+    int64_t min_gap = kDefaultMax;
+
+    auto scan = [&](const std::vector<PriceLevel>& levels) {
+        for (size_t i = 0; i + 1 < levels.size(); ++i) {
+            int64_t gap = levels[i].price - levels[i + 1].price;
+            if (gap < 0) gap = -gap;
+            if (gap > 0 && gap < min_gap) min_gap = gap;
+        }
+    };
+    scan(bids);
+    scan(asks);
+
+    if (min_gap < 1) min_gap = 1;
+    return min_gap;
+}
+
+} // namespace
 
 // OrderBook
 // Cold path; full state reset before applying a new snapshot; clear() here is a memset, not N heap frees
@@ -160,9 +201,14 @@ void OrderBook::seed(const OrderBookSnapshot& snap) {
 
     if (snap.bids.empty() || snap.asks.empty()) return;
 
+    // One tick_step for both ladders (the instrument has one real tick
+    // size, not a different one per side), inferred from the whole
+    // snapshot so a thin side doesn't get a spuriously coarse estimate.
+    int64_t tick_step = infer_tick_step(snap.bids, snap.asks);
+
     // Anchor both ladders to snapshot mid; ensures bids and asks share a consistent index space
-    bids_.init(snap.bids.back().price);  // bids: lowest price = base
-    asks_.init(snap.asks.front().price); // asks: lowest (best) price = base
+    bids_.init(snap.bids.back().price, tick_step);  // bids: lowest price = base
+    asks_.init(snap.asks.front().price, tick_step); // asks: lowest (best) price = base
 
     // qty > 0 guard matches Binance snapshot semantics; zero-qty levels in snapshots are malformed, not deletes
     for (const auto& l : snap.bids) if (l.qty > 0) bids_.set(l.price, l.qty);

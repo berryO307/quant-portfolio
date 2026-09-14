@@ -1,22 +1,24 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { RELAY_HEALTH_URL, RELAY_WS_URL } from "@/lib/config";
 import { useRelayConnection } from "@/lib/useRelayConnection";
 import { computeLiveTailEvents, attributionSplit } from "@/lib/tailAttribution";
+import { INSTRUMENTS } from "@/lib/instruments";
 import { FeedStatusBanner } from "./FeedStatusBanner";
 import { SessionStatsHeader } from "./SessionStatsHeader";
 import { OrderBookLadder } from "./OrderBookLadder";
 import { DepthCurve } from "./DepthCurve";
 import { TradesTape } from "./TradesTape";
 import { LatencyPanel } from "./LatencyPanel";
+import { InstrumentSelect } from "./InstrumentSelect";
 
 type LeftTab = "orderbook" | "trades";
 
 export function Dashboard() {
+  const [instrument, setInstrument] = useState(INSTRUMENTS[0]);
   const { wsConnected, healthOk, cpuGhz, latestSnapshot, trades, recentSamples, stats } = useRelayConnection(
-    RELAY_WS_URL,
-    RELAY_HEALTH_URL
+    instrument.relayWsUrl,
+    instrument.relayHealthUrl
   );
 
   const [hoveredPrice, setHoveredPrice] = useState<number | null>(null);
@@ -49,12 +51,18 @@ export function Dashboard() {
           of their own to lose on remount). */}
       <div className="grid min-h-0 flex-1 grid-cols-1 divide-y divide-border overflow-y-auto lg:grid-cols-[42%_1fr] lg:divide-x lg:divide-y-0 lg:overflow-hidden">
         <div className="flex min-h-[480px] flex-col overflow-hidden lg:min-h-0">
-          <TabBar active={leftTab} onChange={setLeftTab} />
+          <div className="flex items-center justify-between border-b border-border">
+            <TabBar active={leftTab} onChange={setLeftTab} />
+            <div className="px-2">
+              <InstrumentSelect value={instrument} onChange={setInstrument} />
+            </div>
+          </div>
           {leftTab === "orderbook" ? (
             <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
               <div className="min-h-0 flex-[3] overflow-hidden border-b border-border">
                 <OrderBookLadder
                   snapshot={latestSnapshot}
+                  instrument={instrument}
                   hoveredPrice={hoveredPrice}
                   onHoverPrice={setHoveredPrice}
                   lastTrade={lastTrade}
@@ -62,7 +70,13 @@ export function Dashboard() {
                 />
               </div>
               <div className="min-h-0 flex-[2] overflow-hidden">
-                <DepthCurve snapshot={latestSnapshot} hoveredPrice={hoveredPrice} onHoverPrice={setHoveredPrice} />
+                <DepthCurve
+                  snapshot={latestSnapshot}
+                  hoveredPrice={hoveredPrice}
+                  onHoverPrice={setHoveredPrice}
+                  priceDecimals={instrument.priceDecimals}
+                  qtyDecimals={instrument.qtyDecimals}
+                />
               </div>
             </div>
           ) : (
@@ -90,7 +104,7 @@ export function Dashboard() {
 
 function TabBar({ active, onChange }: { active: LeftTab; onChange: (tab: LeftTab) => void }) {
   return (
-    <div className="flex border-b border-border text-xs">
+    <div className="flex text-xs">
       <TabButton label="Order book" selected={active === "orderbook"} onClick={() => onChange("orderbook")} />
       <TabButton label="Trades" selected={active === "trades"} onClick={() => onChange("trades")} />
     </div>

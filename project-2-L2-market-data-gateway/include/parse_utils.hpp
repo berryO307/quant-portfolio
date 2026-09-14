@@ -4,8 +4,9 @@
 #include <string_view>
 #include <system_error>
 
-// Decimal-string-to-scaled-int64 conversion. Used by both ws_client and
-// rest_client to ensure identical numeric semantics across both data paths.
+// Decimal-string-to-scaled-int64 conversion. Used by hyperliquid_adapter
+// for both price/qty levels and trade prints, keeping numeric semantics
+// identical across both.
 
 // Design & Architecture Notes:
 // - Zero Allocation & No Float: Completely float-free and rounding-free, ensuring 
