@@ -39,15 +39,26 @@ interface StageLatencyChartProps {
 export function StageLatencyChart({ title, description, color, points, cpuGhz, minHeight = 130 }: StageLatencyChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
+  const cpuGhzRef = useRef(cpuGhz);
 
+  useEffect(() => {
+    cpuGhzRef.current = cpuGhz;
+    // cpuGhz only changes on a rare mid-session reconnect handshake, not on
+    // the regular data cadence — nothing else would trigger uPlot to
+    // recompute axis labels when only this ref changes, so force one.
+    plotRef.current?.redraw();
+  }, [cpuGhz]);
+
+  // Mount once: create the uPlot instance with empty data. Series/axes/
+  // color are fixed for this component's lifetime — only the data changes,
+  // handled by the effect below via plot.setData(). Previously `new
+  // uPlot(...)` ran inside the effect keyed on `points`, tearing down and
+  // rebuilding the whole canvas on every data update (~4x/second) — see
+  // LatencyChart.tsx's identical fix and comment for the full reasoning;
+  // this component had the same bug for the same cause.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-
-    const xs = points.map((p) => p.x);
-    const ys = points.map((p) => Math.max(p.valueNs, LOG_FLOOR_NS));
-    const t0 = xs[0] ?? 0;
-    const tscToElapsedSeconds = (tsc: number) => (cpuGhz > 0 ? (tsc - t0) / (cpuGhz * 1e9) : 0);
 
     const opts: uPlot.Options = {
       width: el.clientWidth || 300,
@@ -68,7 +79,14 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
           font: TICK_FONT,
           labelFont: LABEL_FONT,
           size: 24,
-          values: (_u, ticks) => {
+          // t0 reads u.data[0][0] — uPlot's own current data — rather than
+          // a value captured in a closure at mount time, which would go
+          // stale the instant new data arrived now that the instance isn't
+          // recreated per update. See LatencyChart.tsx's identical pattern.
+          values: (u, ticks) => {
+            const t0 = (u.data[0]?.[0] as number | undefined) ?? 0;
+            const ghz = cpuGhzRef.current;
+            const tscToElapsedSeconds = (tsc: number) => (ghz > 0 ? (tsc - t0) / (ghz * 1e9) : 0);
             const stepSeconds = ticks.length > 1 ? tscToElapsedSeconds(ticks[1]!) - tscToElapsedSeconds(ticks[0]!) : 1;
             return ticks.map((t) => formatElapsedAdaptive(tscToElapsedSeconds(t), stepSeconds));
           },
@@ -88,7 +106,7 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
       cursor: { drag: { x: false, y: false } },
     };
 
-    const plot = new uPlot(opts, [xs, ys], el);
+    const plot = new uPlot(opts, [[], []], el);
     plotRef.current = plot;
 
     const resize = new ResizeObserver(() => {
@@ -101,7 +119,22 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
       plot.destroy();
       plotRef.current = null;
     };
-  }, [points, cpuGhz, minHeight, color]);
+    // color is a mount-time dependency (not read via ref) since a color
+    // change here would mean a different stage's chart entirely, not a
+    // live update to the same one — deliberately still recreates the
+    // instance in that case, only "new data for the same stage" is now
+    // handled without recreation.
+  }, [minHeight, color]);
+
+  // New data -> update the existing instance in place instead of rebuilding
+  // it — the actual fix, same reasoning as LatencyChart.tsx.
+  useEffect(() => {
+    const plot = plotRef.current;
+    if (!plot) return;
+    const xs = points.map((p) => p.x);
+    const ys = points.map((p) => Math.max(p.valueNs, LOG_FLOOR_NS));
+    plot.setData([xs, ys]);
+  }, [points]);
 
   return (
     <div className="flex flex-col gap-1 rounded-md border border-border bg-[#0a1424] p-2">

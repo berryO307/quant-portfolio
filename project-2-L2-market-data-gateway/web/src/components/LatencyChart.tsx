@@ -23,6 +23,10 @@ const LABEL_FONT = "10px Inter, sans-serif"; // axis captions: sans
 // touches latencyNs itself, only what gets handed to uPlot.
 const LOG_FLOOR_NS = 1;
 
+// Total series count in the AlignedData array: 1 (x) + one per attribution
+// category + one per reference line (p50/p99/p99.9).
+const SERIES_COUNT = 1 + ATTRIBUTION_ORDER.length + 3;
+
 export interface LatencyPoint {
   x: number; // tRecvTsc — a monotonic per-session ordering, not wall-clock time
   latencyNs: number;
@@ -36,6 +40,26 @@ interface LatencyChartProps {
   refLines: { p50: number; p99: number; p999: number };
   cpuGhz: number; // to convert tRecvTsc deltas into a readable elapsed-time x-axis
   minHeight?: number;
+}
+
+function buildAlignedData(points: LatencyPoint[], p50: number, p99: number, p999: number): uPlot.AlignedData {
+  const xs = points.map((p) => p.x);
+  const seriesByCategory = ATTRIBUTION_ORDER.map((cat) =>
+    points.map((p) => (p.attribution === cat ? Math.max(p.latencyNs, LOG_FLOOR_NS) : null))
+  );
+  const refLineValues = [p50, p99, p999].map((v) => Math.max(v, LOG_FLOOR_NS));
+  const refSeries = refLineValues.map(() => xs.map(() => null as number | null));
+  // Constant lines only need two anchor points (first/last x) to draw
+  // correctly under uPlot's line renderer, but using the full x domain
+  // with a constant y is simpler to keep in sync with the main series.
+  refLineValues.forEach((v, i) => {
+    if (xs.length > 0) {
+      refSeries[i]![0] = v;
+      refSeries[i]![xs.length - 1] = v;
+    }
+  });
+
+  return [xs, ...seriesByCategory, ...refSeries];
 }
 
 // uPlot, not Altair/Vega-Lite — this is the live interactive chart (Phase 5's
@@ -56,28 +80,41 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
+  // Read inside hooks defined once at mount (setCursor, the x-axis `values`
+  // callback) so those closures never go stale — see the mount effect's
+  // comment for why the instance is no longer recreated on every update.
+  const pointsRef = useRef<LatencyPoint[]>(points);
+  const cpuGhzRef = useRef(cpuGhz);
 
+  useEffect(() => {
+    pointsRef.current = points;
+  }, [points]);
+
+  useEffect(() => {
+    cpuGhzRef.current = cpuGhz;
+    // cpuGhz only changes on a rare mid-session reconnect handshake, not on
+    // the regular data cadence — nothing else would trigger uPlot to
+    // recompute axis labels when only this ref changes, so force one.
+    plotRef.current?.redraw();
+  }, [cpuGhz]);
+
+  // Mount once: create the uPlot instance with empty data. Series count,
+  // colors, axes, and hooks are all fixed for this component's lifetime —
+  // only the data changes, handled by the effect below via plot.setData().
+  //
+  // Previously this whole block (including `new uPlot(...)`) ran inside the
+  // effect keyed on `points` — i.e. a full teardown-and-rebuild of the
+  // canvas, DOM, and every internal uPlot data structure on every single
+  // data update (~4x/second, via useRelayConnection's sample-flush
+  // interval). The comment that used to justify this ("construction cost is
+  // negligible") was true in isolation but wrong about the visible effect:
+  // reported via screenshot as axis ticks that look like they're
+  // recalculating every render and points that never transition smoothly.
+  // Rebuilding the instance is exactly what was doing that — every redraw
+  // was a brand new plot, not an update to an existing one.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-
-    const xs = points.map((p) => p.x);
-    const seriesByCategory = ATTRIBUTION_ORDER.map((cat) =>
-      points.map((p) => (p.attribution === cat ? Math.max(p.latencyNs, LOG_FLOOR_NS) : null))
-    );
-    const refLineValues = [refLines.p50, refLines.p99, refLines.p999].map((v) => Math.max(v, LOG_FLOOR_NS));
-    const refSeries = refLineValues.map(() => xs.map(() => null as number | null));
-    // Constant lines only need two anchor points (first/last x) to draw
-    // correctly under uPlot's line renderer, but using the full x domain
-    // with a constant y is simpler to keep in sync with the main series.
-    refLineValues.forEach((v, i) => {
-      if (xs.length > 0) {
-        refSeries[i]![0] = v;
-        refSeries[i]![xs.length - 1] = v;
-      }
-    });
-
-    const data: uPlot.AlignedData = [xs, ...seriesByCategory, ...refSeries];
 
     const series: uPlot.Series[] = [
       {},
@@ -96,15 +133,6 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
       { label: "p99.9", stroke: COLOR_SEVERE, width: 1, dash: [4, 3], points: { show: false } },
     ];
 
-    // tRecvTsc has no fixed relationship to wall-clock time (raw per-session
-    // TSC cycles) — the only readable thing to show is elapsed time since
-    // the first point currently plotted, converted via the known cpu_ghz.
-    // formatElapsedAdaptive picks its unit/precision from the SPACING
-    // between ticks, not the value itself — see format.ts's comment for why
-    // that's what fixes the "every tick reads 0.0s" bug.
-    const t0 = xs[0] ?? 0;
-    const tscToElapsedSeconds = (tsc: number) => (cpuGhz > 0 ? (tsc - t0) / (cpuGhz * 1e9) : 0);
-
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: Math.max(el.clientHeight || 0, minHeight),
@@ -116,7 +144,20 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
           label: "elapsed time",
           font: TICK_FONT,
           labelFont: LABEL_FONT,
-          values: (_u, ticks) => {
+          // tRecvTsc has no fixed relationship to wall-clock time (raw
+          // per-session TSC cycles) — the only readable thing to show is
+          // elapsed time since the first point CURRENTLY plotted. t0 reads
+          // u.data[0][0] — uPlot's own current data — rather than a value
+          // captured in a closure at mount time, which would go stale the
+          // instant new data arrived (the whole point of not recreating
+          // the instance anymore). formatElapsedAdaptive picks its unit/
+          // precision from the SPACING between ticks, not the value itself
+          // — see format.ts's comment for why that's what fixes the
+          // "every tick reads 0.0s" bug.
+          values: (u, ticks) => {
+            const t0 = (u.data[0]?.[0] as number | undefined) ?? 0;
+            const ghz = cpuGhzRef.current;
+            const tscToElapsedSeconds = (tsc: number) => (ghz > 0 ? (tsc - t0) / (ghz * 1e9) : 0);
             const stepSeconds = ticks.length > 1 ? tscToElapsedSeconds(ticks[1]!) - tscToElapsedSeconds(ticks[0]!) : 1;
             return ticks.map((t) => formatElapsedAdaptive(tscToElapsedSeconds(t), stepSeconds));
           },
@@ -144,7 +185,7 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
             const tooltip = tooltipRef.current;
             if (!tooltip) return;
             const idx = u.cursor.idx;
-            const point = idx == null ? null : points[idx];
+            const point = idx == null ? null : pointsRef.current[idx];
             if (!point) {
               tooltip.style.display = "none";
               return;
@@ -180,7 +221,8 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
       },
     };
 
-    const plot = new uPlot(opts, data, el);
+    const emptyData = Array.from({ length: SERIES_COUNT }, () => [] as number[]) as unknown as uPlot.AlignedData;
+    const plot = new uPlot(opts, emptyData, el);
     plotRef.current = plot;
 
     const resize = new ResizeObserver(() => {
@@ -193,11 +235,17 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
       plot.destroy();
       plotRef.current = null;
     };
-    // Rebuilding on every data change (rather than plot.setData) keeps this
-    // simple — series count/order never changes, only which points and how
-    // many, and uPlot's construction cost at this data size (<=2000 points)
-    // is negligible next to the ~250ms batch cadence samples arrive at.
-  }, [points, refLines.p50, refLines.p99, refLines.p999, cpuGhz, minHeight]);
+  }, [minHeight]);
+
+  // New data -> update the existing instance in place instead of rebuilding
+  // it. This is the actual fix: uPlot's setData() reuses the canvas/DOM and
+  // only repaints what changed, which is what makes point-to-point
+  // transitions read as continuous motion instead of a flicker.
+  useEffect(() => {
+    const plot = plotRef.current;
+    if (!plot) return;
+    plot.setData(buildAlignedData(points, refLines.p50, refLines.p99, refLines.p999));
+  }, [points, refLines.p50, refLines.p99, refLines.p999]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-md border border-border bg-[#0a1424] p-2">
