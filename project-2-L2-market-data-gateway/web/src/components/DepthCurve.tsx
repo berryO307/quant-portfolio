@@ -5,7 +5,7 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { computeDepthLevels } from "@/lib/orderBook";
 import { toPrice, toQty, type SnapshotRecord } from "@/lib/types";
-import { COLOR_ASK, COLOR_BID, UPLOT_AXIS_STYLE } from "@/lib/theme";
+import { buildAxisStyle, useChartTheme, withAlpha } from "@/lib/chartTheme";
 import { LegendSwatch } from "./LegendSwatch";
 
 const TICK_FONT = "10px JetBrains Mono, monospace"; // numbers: mono
@@ -130,6 +130,7 @@ export function DepthCurve({
   priceDecimals = 2,
   qtyDecimals = 3,
 }: DepthCurveProps) {
+  const chartTheme = useChartTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const rawXsRef = useRef<number[]>([]);
@@ -241,17 +242,17 @@ export function DepthCurve({
         {},
         {
           label: "bids",
-          stroke: COLOR_BID,
-          fill: `${COLOR_BID}33`,
+          stroke: chartTheme.bid,
+          fill: withAlpha(chartTheme.bid, 0.2),
           paths: uPlot.paths.stepped!({ align: 1 }),
-          points: { show: true, size: 5, fill: COLOR_BID, stroke: COLOR_BID },
+          points: { show: true, size: 5, fill: chartTheme.bid, stroke: chartTheme.bid },
         },
         {
           label: "asks",
-          stroke: COLOR_ASK,
-          fill: `${COLOR_ASK}33`,
+          stroke: chartTheme.ask,
+          fill: withAlpha(chartTheme.ask, 0.2),
           paths: uPlot.paths.stepped!({ align: 1 }),
-          points: { show: true, size: 5, fill: COLOR_ASK, stroke: COLOR_ASK },
+          points: { show: true, size: 5, fill: chartTheme.ask, stroke: chartTheme.ask },
         },
       ],
       // LINEAR y-axis, deliberately — a log-scale attempt here (this
@@ -268,13 +269,13 @@ export function DepthCurve({
       scales: { x: { time: false }, y: { range: (_u, _min, max) => [0, max] } },
       axes: [
         {
-          ...UPLOT_AXIS_STYLE,
+          ...buildAxisStyle(chartTheme),
           label: "price",
           font: TICK_FONT,
           labelFont: LABEL_FONT,
           values: (_u, ticks) => ticks.map((t) => t.toFixed(priceDecimals)),
         },
-        { ...UPLOT_AXIS_STYLE, label: "cumulative size", font: TICK_FONT, labelFont: LABEL_FONT },
+        { ...buildAxisStyle(chartTheme), label: "cumulative size", font: TICK_FONT, labelFont: LABEL_FONT },
       ],
       legend: { show: false },
       // A real crosshair (both axes) plus a floating tooltip — uPlot
@@ -388,8 +389,11 @@ export function DepthCurve({
     // tooltip text) — including them here means switching the active
     // instrument tears down and rebuilds the plot with correct precision,
     // rather than keeping the previous instrument's decimal counts baked
-    // into a closure until some other prop happens to change.
-  }, [minHeight, priceDecimals, qtyDecimals]);
+    // into a closure until some other prop happens to change. chartTheme
+    // for the same reason: colors are baked into series/axes at
+    // construction, not CSS the browser repaints on its own, so a light/
+    // dark toggle needs this to actually rebuild with the new palette.
+  }, [minHeight, priceDecimals, qtyDecimals, chartTheme]);
 
   // New (possibly throttled) snapshot, OR a depth-selector change -> update
   // the existing instance's data in place, and reposition the permanent
@@ -432,7 +436,7 @@ export function DepthCurve({
   const hasData = !!effectiveSnapshot && (effectiveSnapshot.bids.length > 0 || effectiveSnapshot.asks.length > 0);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-md border border-border bg-[#0a1424] p-2">
+    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-md border border-border bg-panel p-2">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-foreground" title="Cumulative bid/ask size at each price level, live.">
           Depth curve
@@ -440,8 +444,8 @@ export function DepthCurve({
         <div className="flex items-center gap-3">
           <DepthLevelSelect value={effectiveDepthLevels} max={maxAvailableLevels} onChange={setDepthLevels} />
           <TimeframeToggle value={timeframeMs} onChange={setTimeframeMs} />
-          <LegendSwatch color={COLOR_BID} label="Bids" />
-          <LegendSwatch color={COLOR_ASK} label="Asks" />
+          <LegendSwatch color={chartTheme.bid} label="Bids" />
+          <LegendSwatch color={chartTheme.ask} label="Asks" />
         </div>
       </div>
       <div
@@ -478,7 +482,7 @@ function DepthLevelSelect({ value, max, onChange }: { value: number; max: number
       value={value}
       onChange={(e) => onChange(Number(e.target.value))}
       title={`Levels per side shown, nearest the spread first (${MIN_DEPTH_LEVELS}–${max} available)`}
-      className="rounded border border-border bg-[#0a1424] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-foreground"
+      className="rounded border border-border bg-panel px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-foreground"
     >
       {options.map((n) => (
         <option key={n} value={n}>

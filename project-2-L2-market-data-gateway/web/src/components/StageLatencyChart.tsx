@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { UPLOT_AXIS_STYLE } from "@/lib/theme";
+import { buildAxisStyle, useChartTheme } from "@/lib/chartTheme";
 import { formatElapsedAdaptive, formatNs } from "@/lib/format";
 
 const TICK_FONT = "10px JetBrains Mono, monospace"; // numbers: mono
@@ -37,6 +37,7 @@ interface StageLatencyChartProps {
 // book-update stall, a jitter spike) that would otherwise crush the normal
 // cluster flat against zero on a linear axis.
 export function StageLatencyChart({ title, description, color, points, cpuGhz, minHeight = 130 }: StageLatencyChartProps) {
+  const chartTheme = useChartTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const cpuGhzRef = useRef(cpuGhz);
@@ -75,7 +76,7 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
       scales: { x: { time: false }, y: { distr: 3, log: 10 } },
       axes: [
         {
-          ...UPLOT_AXIS_STYLE,
+          ...buildAxisStyle(chartTheme),
           font: TICK_FONT,
           labelFont: LABEL_FONT,
           size: 24,
@@ -92,7 +93,7 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
           },
         },
         {
-          ...UPLOT_AXIS_STYLE,
+          ...buildAxisStyle(chartTheme),
           font: TICK_FONT,
           labelFont: LABEL_FONT,
           size: 44,
@@ -123,8 +124,12 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
     // change here would mean a different stage's chart entirely, not a
     // live update to the same one — deliberately still recreates the
     // instance in that case, only "new data for the same stage" is now
-    // handled without recreation.
-  }, [minHeight, color]);
+    // handled without recreation. chartTheme is also a dependency for the
+    // axis's grid/border/muted colors (buildAxisStyle), which don't derive
+    // from `color` at all — a light/dark toggle changes both, but only
+    // `color` happens to be threaded through the `color` prop already;
+    // the axis needs its own live theme read to actually repaint.
+  }, [minHeight, color, chartTheme]);
 
   // New data -> update the existing instance in place instead of rebuilding
   // it — the actual fix, same reasoning as LatencyChart.tsx.
@@ -137,7 +142,7 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
   }, [points]);
 
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-border bg-[#0a1424] p-2">
+    <div className="flex flex-col gap-1 rounded-md border border-border bg-panel p-2">
       <div className="text-[11px] text-foreground" title={description}>
         {title}
       </div>

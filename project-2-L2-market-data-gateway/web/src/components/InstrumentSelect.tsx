@@ -23,7 +23,7 @@ export function InstrumentSelect({
         if (next) onChange(next);
       }}
       title="Instrument — selecting one connects to its own relay endpoint, started independently"
-      className="rounded border border-border bg-[#0a1424] px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-foreground"
+      className="rounded border border-border bg-panel px-1.5 py-0.5 font-mono text-[10px] tabular-nums text-foreground"
     >
       {INSTRUMENTS.map((i) => (
         <option key={i.id} value={i.id}>

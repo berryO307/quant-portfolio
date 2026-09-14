@@ -95,7 +95,7 @@ function StageBarsView({
 function Bar({ value, max, color, highlighted }: { value: number; max: number; color: string; highlighted: boolean }) {
   const widthPct = Math.min(100, (value / max) * 100);
   return (
-    <div className="h-2 w-full overflow-hidden rounded-sm bg-[#0a1424]">
+    <div className="h-2 w-full overflow-hidden rounded-sm bg-panel">
       <div
         className="h-full"
         style={{ width: `${widthPct}%`, backgroundColor: color, boxShadow: highlighted ? `inset 0 0 0 1px ${COLOR_SEVERE}` : undefined }}

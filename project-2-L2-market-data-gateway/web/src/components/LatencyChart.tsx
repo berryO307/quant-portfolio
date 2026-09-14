@@ -4,7 +4,8 @@ import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { Attribution } from "@/lib/types";
-import { ATTRIBUTION_COLORS, ATTRIBUTION_LABEL, COLOR_JITTER, COLOR_MUTED, COLOR_SEVERE, UPLOT_AXIS_STYLE } from "@/lib/theme";
+import { ATTRIBUTION_LABEL } from "@/lib/theme";
+import { buildAxisStyle, useChartTheme, type ChartTheme } from "@/lib/chartTheme";
 import { formatElapsedAdaptive, formatNs } from "@/lib/format";
 import { LegendSwatch } from "./LegendSwatch";
 
@@ -26,6 +27,21 @@ const LOG_FLOOR_NS = 1;
 // Total series count in the AlignedData array: 1 (x) + one per attribution
 // category + one per reference line (p50/p99/p99.9).
 const SERIES_COUNT = 1 + ATTRIBUTION_ORDER.length + 3;
+
+// Was lib/theme.ts's static ATTRIBUTION_COLORS — rebuilt from a live
+// ChartTheme instead so these actually follow the active light/dark theme.
+// "publish" intentionally reuses the bid color (both mean "the pipeline's
+// own healthy/good-outcome stage" in their respective charts), matching
+// ATTRIBUTION_COLORS' original mapping.
+function attributionColors(theme: ChartTheme): Record<Attribution | "normal", string> {
+  return {
+    normal: theme.muted,
+    host_jitter: theme.jitter,
+    parse: theme.parse,
+    "book-update": theme.bookUpdate,
+    publish: theme.bid,
+  };
+}
 
 export interface LatencyPoint {
   x: number; // tRecvTsc — a monotonic per-session ordering, not wall-clock time
@@ -77,6 +93,7 @@ function buildAlignedData(points: LatencyPoint[], p50: number, p99: number, p999
 // small floating tooltip that follows the cursor (the live value, only
 // visible on hover) — see the setCursor hook below.
 export function LatencyChart({ title, description, points, refLines, cpuGhz, minHeight = 200 }: LatencyChartProps) {
+  const chartTheme = useChartTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -116,21 +133,22 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
     const el = containerRef.current;
     if (!el) return;
 
+    const colors = attributionColors(chartTheme);
     const series: uPlot.Series[] = [
       {},
       ...ATTRIBUTION_ORDER.map((cat) => ({
         label: cat,
-        stroke: ATTRIBUTION_COLORS[cat],
-        fill: ATTRIBUTION_COLORS[cat],
+        stroke: colors[cat],
+        fill: colors[cat],
         paths: () => null, // scatter only — no connecting line
-        points: { show: true, size: 5, fill: ATTRIBUTION_COLORS[cat], stroke: ATTRIBUTION_COLORS[cat] },
+        points: { show: true, size: 5, fill: colors[cat], stroke: colors[cat] },
       })),
-      { label: "p50", stroke: COLOR_MUTED, width: 1, dash: [4, 3], points: { show: false } },
-      { label: "p99", stroke: COLOR_JITTER, width: 1, dash: [4, 3], points: { show: false } },
-      // Was COLOR_ASK (bid/ask red) before Phase 8.5's redesign — collided
-      // with ask's meaning despite having nothing to do with the order
-      // book. See theme.ts's COLOR_SEVERE comment.
-      { label: "p99.9", stroke: COLOR_SEVERE, width: 1, dash: [4, 3], points: { show: false } },
+      { label: "p50", stroke: chartTheme.muted, width: 1, dash: [4, 3], points: { show: false } },
+      { label: "p99", stroke: chartTheme.jitter, width: 1, dash: [4, 3], points: { show: false } },
+      // Was ask-red before Phase 8.5's redesign — collided with ask's
+      // meaning despite having nothing to do with the order book. See
+      // chartTheme.ts's `severe` token.
+      { label: "p99.9", stroke: chartTheme.severe, width: 1, dash: [4, 3], points: { show: false } },
     ];
 
     const opts: uPlot.Options = {
@@ -140,7 +158,7 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
       scales: { x: { time: false }, y: { distr: 3, log: 10 } },
       axes: [
         {
-          ...UPLOT_AXIS_STYLE,
+          ...buildAxisStyle(chartTheme),
           label: "elapsed time",
           font: TICK_FONT,
           labelFont: LABEL_FONT,
@@ -163,7 +181,7 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
           },
         },
         {
-          ...UPLOT_AXIS_STYLE,
+          ...buildAxisStyle(chartTheme),
           label: "latency (log scale)",
           font: TICK_FONT,
           labelFont: LABEL_FONT,
@@ -235,7 +253,11 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
       plot.destroy();
       plotRef.current = null;
     };
-  }, [minHeight]);
+    // chartTheme is a dependency for the same reason minHeight/priceDecimals
+    // are in DepthCurve.tsx's mount effect: colors are baked into series/
+    // axes at construction, not CSS the browser repaints on its own, so a
+    // light/dark toggle needs this to actually rebuild with the new palette.
+  }, [minHeight, chartTheme]);
 
   // New data -> update the existing instance in place instead of rebuilding
   // it. This is the actual fix: uPlot's setData() reuses the canvas/DOM and
@@ -248,7 +270,7 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
   }, [points, refLines.p50, refLines.p99, refLines.p999]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-md border border-border bg-[#0a1424] p-2">
+    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-md border border-border bg-panel p-2">
       {/* Hover the heading for what this chart shows (Phase 8.5's fourth
           pass) — replaces a permanently-visible subtitle line with a native
           tooltip, one less line of always-on text competing for space. */}
@@ -257,11 +279,15 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
       </div>
       <div className="flex flex-wrap gap-x-3 gap-y-1">
         {ATTRIBUTION_ORDER.map((cat) => (
-          <LegendSwatch key={cat} color={ATTRIBUTION_COLORS[cat]} label={cat === "normal" ? "normal" : ATTRIBUTION_LABEL[cat]} />
+          <LegendSwatch
+            key={cat}
+            color={attributionColors(chartTheme)[cat]}
+            label={cat === "normal" ? "normal" : ATTRIBUTION_LABEL[cat]}
+          />
         ))}
-        <LegendSwatch color={COLOR_MUTED} label="p50" dashed />
-        <LegendSwatch color={COLOR_JITTER} label="p99" dashed />
-        <LegendSwatch color={COLOR_SEVERE} label="p99.9" dashed />
+        <LegendSwatch color={chartTheme.muted} label="p50" dashed />
+        <LegendSwatch color={chartTheme.jitter} label="p99" dashed />
+        <LegendSwatch color={chartTheme.severe} label="p99.9" dashed />
       </div>
       {/* This wrapper, not containerRef, is what should grow to fill
           available space (Phase 8.5's "let the chart take the slack" fix) —
