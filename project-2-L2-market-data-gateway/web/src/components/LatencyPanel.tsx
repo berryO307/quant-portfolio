@@ -3,7 +3,7 @@
 import { useMemo, useRef, useState } from "react";
 import type { HistoricalSummary, LiveSample, TailEvent } from "@/lib/types";
 import { computeLiveTailEvents, tailEventsFromHistorical } from "@/lib/tailAttribution";
-import { COLOR_BID, COLOR_BOOK_UPDATE, COLOR_JITTER, COLOR_PARSE } from "@/lib/theme";
+import { useChartTheme } from "@/lib/chartTheme";
 import { LatencyChart, type LatencyPoint } from "./LatencyChart";
 import { StageLatencyChart, type StagePoint } from "./StageLatencyChart";
 import { TailEventsFeed } from "./TailEventsFeed";
@@ -29,6 +29,7 @@ function isHistoricalSummary(value: unknown): value is HistoricalSummary {
 // of infrastructure this needs. Live mode subscribes to the same rolling
 // sample buffer useRelayConnection already maintains.
 export function LatencyPanel({ recentSamples, cpuGhz }: LatencyPanelProps) {
+  const chartTheme = useChartTheme();
   const [mode, setMode] = useState<Mode>("live");
   const [historical, setHistorical] = useState<HistoricalSummary | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -157,28 +158,28 @@ export function LatencyPanel({ recentSamples, cpuGhz }: LatencyPanelProps) {
             <StageLatencyChart
               title="Parse stage"
               description="Time to parse the raw exchange message into a normalized tick."
-              color={COLOR_PARSE}
+              color={chartTheme.parse}
               points={parsePoints}
               cpuGhz={cpuGhz}
             />
             <StageLatencyChart
               title="Book-update stage"
               description="Time to apply the parsed tick to the in-memory order book."
-              color={COLOR_BOOK_UPDATE}
+              color={chartTheme.bookUpdate}
               points={bookUpdatePoints}
               cpuGhz={cpuGhz}
             />
             <StageLatencyChart
               title="Publish stage"
               description="Time to publish the updated tick downstream, after the book update."
-              color={COLOR_BID}
+              color={chartTheme.bid}
               points={publishPoints}
               cpuGhz={cpuGhz}
             />
             <StageLatencyChart
               title="Host jitter"
               description="OS scheduling noise measured by a dedicated canary thread — not part of the pipeline's own work, but it can still delay a sample."
-              color={COLOR_JITTER}
+              color={chartTheme.jitter}
               points={jitterPoints}
               cpuGhz={cpuGhz}
             />

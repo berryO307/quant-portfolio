@@ -3,10 +3,11 @@
 @custom-variant dark (&:is(.dark *));
 
 /* tweakcn export, finalized by hand — see README/PHASES for the redesign
-   pass this belongs to. Dark theme is a fixed design choice for this
-   dashboard, not a system-preference fallback (see layout.tsx's permanent
-   `dark` class) — the light-mode (:root) tokens below exist because the
-   theme ships them, but this app never actually renders in light mode. */
+   pass this belongs to. Dark was a fixed design choice with no runtime
+   toggle at first (layout.tsx hardcoded the `dark` class directly) — a
+   real light/dark toggle was added later (see lib/useTheme.ts), so the
+   light-mode (:root) tokens below are now genuinely reachable, not dead
+   weight the tweakcn export happened to include. */
 :root {
   --background: oklch(1.0000 0 0);
   --foreground: oklch(0.1371 0.0360 258.5258);
@@ -27,6 +28,24 @@
   --border: oklch(0.9290 0.0126 255.5317);
   --input: oklch(0.9290 0.0126 255.5317);
   --ring: oklch(0.5460 0.2153 262.8719);
+  /* Domain tokens NOT part of the tweakcn export — bid/ask, pipeline-stage
+     attribution, host jitter/severity, and a "panel" tone distinct from
+     card/background (this theme has --card == --background exactly, which
+     reads as flat with no separation between a panel and the page behind
+     it). Dark-mode values below match lib/theme.ts's existing hardcoded hex
+     constants exactly (zero visual change for the dashboard's original
+     always-dark appearance); light-mode values are new, chosen for
+     legibility on a white background rather than derived from anything. */
+  --panel: #f1f5f9;
+  --grid: #e2e8f0;
+  --chart-text: #334155;
+  --bid: #16a34a;
+  --ask: #dc2626;
+  --parse: #2563eb;
+  --book-update: #7c3aed;
+  --jitter: #a16207;
+  --severe: #854d0e;
+  --error-bg: #fef2f2;
   --chart-1: oklch(0.5460 0.2153 262.8719);
   --chart-2: oklch(0.7211 0.1415 253.1015);
   --chart-3: oklch(0.6325 0.1843 258.6360);
@@ -82,6 +101,19 @@
   --border: oklch(0.2800 0.0369 259.9740);
   --input: oklch(0.2800 0.0369 259.9740);
   --ring: oklch(0.4878 0.2170 264.3876);
+  /* Matches lib/theme.ts's COLOR_PANEL_BG/COLOR_GRID/COLOR_TEXT/COLOR_BID/
+     COLOR_ASK/COLOR_PARSE/COLOR_BOOK_UPDATE/COLOR_JITTER/COLOR_SEVERE/
+     COLOR_ERROR_BG exactly — see :root's comment above. */
+  --panel: #0a1424;
+  --grid: #111b2a;
+  --chart-text: #cbd5e1;
+  --bid: #3fb950;
+  --ask: #f85149;
+  --parse: #58a6ff;
+  --book-update: #bc8cff;
+  --jitter: #9c7f43;
+  --severe: #b19655;
+  --error-bg: #3a1418;
   --chart-1: oklch(0.4878 0.2170 264.3876);
   --chart-2: oklch(0.5449 0.2154 262.7414);
   --chart-3: oklch(0.6776 0.1481 238.1044);
@@ -148,6 +180,17 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+
+  --color-panel: var(--panel);
+  --color-grid: var(--grid);
+  --color-chart-text: var(--chart-text);
+  --color-bid: var(--bid);
+  --color-ask: var(--ask);
+  --color-parse: var(--parse);
+  --color-book-update: var(--book-update);
+  --color-jitter: var(--jitter);
+  --color-severe: var(--severe);
+  --color-error-bg: var(--error-bg);
 
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);

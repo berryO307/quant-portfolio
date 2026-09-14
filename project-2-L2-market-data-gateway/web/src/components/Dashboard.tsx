@@ -11,6 +11,7 @@ import { DepthCurve } from "./DepthCurve";
 import { TradesTape } from "./TradesTape";
 import { LatencyPanel } from "./LatencyPanel";
 import { InstrumentSelect } from "./InstrumentSelect";
+import { ThemeToggle } from "./ThemeToggle";
 
 type LeftTab = "orderbook" | "trades";
 
@@ -53,8 +54,9 @@ export function Dashboard() {
         <div className="flex min-h-[480px] flex-col overflow-hidden lg:min-h-0">
           <div className="flex items-center justify-between border-b border-border">
             <TabBar active={leftTab} onChange={setLeftTab} />
-            <div className="px-2">
+            <div className="flex items-center gap-2 px-2">
               <InstrumentSelect value={instrument} onChange={setInstrument} />
+              <ThemeToggle />
             </div>
           </div>
           {leftTab === "orderbook" ? (

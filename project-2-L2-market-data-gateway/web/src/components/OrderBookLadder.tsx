@@ -176,7 +176,7 @@ function TickerRow({
   const arrow = direction === "down" ? "↓" : "↑";
 
   return (
-    <div className="flex items-center justify-end gap-2 border-y border-border bg-[#0a1424] px-3 py-1 font-mono text-xs tabular-nums">
+    <div className="flex items-center justify-end gap-2 border-y border-border bg-panel px-3 py-1 font-mono text-xs tabular-nums">
       {lastTrade ? (
         <span className={`font-semibold ${color}`}>
           {arrow} {toPrice(lastTrade.price).toFixed(priceDecimals)}
