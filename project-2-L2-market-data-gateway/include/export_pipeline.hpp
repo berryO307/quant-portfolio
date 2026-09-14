@@ -73,7 +73,13 @@ struct ExportSample {
 
 // Periodic top-of-book snapshot. Fixed depth (not the full ladder) so every
 // ring slot has a bounded, known size regardless of record type.
-static constexpr size_t EXPORT_SNAPSHOT_DEPTH = 10;
+//
+// Was 10, then 50 (still well inside the in-memory OrderBook's own 200-level
+// depth, so no upstream limitation to work around). Bumped again to 100 so
+// the web depth curve's level-count selector (a min-50 floor, ceiling
+// tracking whatever this constant provides) has actual headroom above its
+// floor instead of collapsing to a single greyed-out option.
+static constexpr size_t EXPORT_SNAPSHOT_DEPTH = 100;
 
 struct ExportSnapshot {
     uint64_t   tsc;
