@@ -5,7 +5,7 @@ import type { TailEvent } from "@/lib/types";
 // matching LatencyChart/the Phase 5 Altair palette, so an operator can
 // visually scan for "is this tail event even worth investigating in our own
 // code".
-import { ATTRIBUTION_COLORS_MUTED_JITTER, ATTRIBUTION_LABEL, COLOR_ASK } from "@/lib/theme";
+import { ATTRIBUTION_COLORS_MUTED_JITTER, ATTRIBUTION_LABEL, COLOR_SEVERE } from "@/lib/theme";
 import { formatNs } from "@/lib/format";
 
 interface TailEventsFeedProps {
@@ -17,15 +17,15 @@ interface TailEventsFeedProps {
 export function TailEventsFeed({ tailEvents, selectedKey, onSelect }: TailEventsFeedProps) {
   if (tailEvents.length === 0) {
     return (
-      <div className="flex h-full items-center justify-center font-mono text-xs text-[#8b949e]">
-        no tail events yet
+      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+        No tail events yet
       </div>
     );
   }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto font-mono text-xs">
-      <div className="grid grid-cols-[1fr_auto_auto] gap-2 border-b border-[#30363d] px-3 py-1 text-[10px] uppercase tracking-wide text-[#8b949e]">
+    <div className="flex h-full flex-col overflow-y-auto text-xs">
+      <div className="grid grid-cols-[1fr_auto_auto] gap-2 border-b border-border px-3 py-1 text-[10px] text-muted-foreground">
         <span>Timestamp (TSC)</span>
         <span className="text-right">Latency</span>
         <span className="text-right">Attribution</span>
@@ -37,12 +37,14 @@ export function TailEventsFeed({ tailEvents, selectedKey, onSelect }: TailEvents
             key={event.key}
             type="button"
             onClick={() => onSelect(event)}
-            className={`grid grid-cols-[1fr_auto_auto] items-center gap-2 border-b border-[#161b22] px-3 py-1 text-left hover:bg-[#161b22] ${
-              selected ? "bg-[#161b22]" : ""
+            className={`grid grid-cols-[1fr_auto_auto] items-center gap-2 border-b border-[#0a1424] px-3 py-1 text-left hover:bg-accent ${
+              selected ? "bg-accent" : ""
             }`}
           >
-            <span className="truncate text-[#c9d1d9]">{event.tRecvTsc}</span>
-            <span className="text-right" style={{ color: COLOR_ASK }}>
+            <span className="truncate font-mono tabular-nums text-foreground">{event.tRecvTsc}</span>
+            {/* COLOR_SEVERE, not ask-red — this value flags a notable
+                latency outlier, unrelated to bid/ask semantics (Phase 8.5). */}
+            <span className="text-right font-mono tabular-nums" style={{ color: COLOR_SEVERE }}>
               {formatNs(event.latencyNs)}
             </span>
             <span className="text-right" style={{ color: ATTRIBUTION_COLORS_MUTED_JITTER[event.attribution] }}>
