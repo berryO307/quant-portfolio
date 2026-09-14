@@ -535,7 +535,7 @@ export function DepthCurve({
   const hasData = !!effectiveSnapshot && (effectiveSnapshot.bids.length > 0 || effectiveSnapshot.asks.length > 0);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-md border border-border bg-panel p-2">
+    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-lg border border-border bg-panel p-2 shadow-sm">
       <div className="flex items-center justify-between gap-3">
         <div className="text-xs text-foreground" title="Cumulative bid/ask size at each price level, live.">
           Depth curve

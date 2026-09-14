@@ -5,7 +5,7 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import type { Attribution } from "@/lib/types";
 import { ATTRIBUTION_LABEL } from "@/lib/theme";
-import { buildAxisStyle, useChartTheme, type ChartTheme } from "@/lib/chartTheme";
+import { buildAxisStyle, useChartTheme, withAlpha, type ChartTheme } from "@/lib/chartTheme";
 import { formatElapsedAdaptive, formatNs } from "@/lib/format";
 import { LegendSwatch } from "./LegendSwatch";
 
@@ -143,19 +143,29 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
         paths: () => null, // scatter only — no connecting line
         points: { show: true, size: 5, fill: colors[cat], stroke: colors[cat] },
       })),
-      { label: "p50", stroke: chartTheme.muted, width: 1, dash: [4, 3], points: { show: false } },
-      { label: "p99", stroke: chartTheme.jitter, width: 1, dash: [4, 3], points: { show: false } },
+      // withAlpha at 0.7: these are reference context behind the scatter,
+      // not the most prominent thing in the panel — full-opacity dashed
+      // lines competed with the data points themselves for attention.
+      { label: "p50", stroke: withAlpha(chartTheme.muted, 0.7), width: 1, dash: [4, 3], points: { show: false } },
+      { label: "p99", stroke: withAlpha(chartTheme.jitter, 0.7), width: 1, dash: [4, 3], points: { show: false } },
       // Was ask-red before Phase 8.5's redesign — collided with ask's
       // meaning despite having nothing to do with the order book. See
       // chartTheme.ts's `severe` token.
-      { label: "p99.9", stroke: chartTheme.severe, width: 1, dash: [4, 3], points: { show: false } },
+      { label: "p99.9", stroke: withAlpha(chartTheme.severe, 0.7), width: 1, dash: [4, 3], points: { show: false } },
     ];
 
     const opts: uPlot.Options = {
       width: el.clientWidth || 600,
       height: Math.max(el.clientHeight || 0, minHeight),
       series,
-      scales: { x: { time: false }, y: { distr: 3, log: 10 } },
+      // No explicit y range meant uPlot's default log-scale auto-ranging
+      // clamped tightly to [min, max] of the plotted data/reference lines —
+      // with p99.9 often sitting right at (or defining) that max, its
+      // dashed line rendered bunched against the top axis boundary,
+      // clipping into it instead of reading as a distinct line with room
+      // around it. 20% headroom above the max keeps every reference line
+      // visually separated from the axis edge and from each other.
+      scales: { x: { time: false }, y: { distr: 3, log: 10, range: (_u, min, max) => [Math.max(min, LOG_FLOOR_NS), max * 1.2] } },
       axes: [
         {
           ...buildAxisStyle(chartTheme),
@@ -270,7 +280,7 @@ export function LatencyChart({ title, description, points, refLines, cpuGhz, min
   }, [points, refLines.p50, refLines.p99, refLines.p999]);
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-md border border-border bg-panel p-2">
+    <div className="flex h-full min-h-0 flex-col gap-1.5 rounded-lg border border-border bg-panel p-2 shadow-sm">
       {/* Hover the heading for what this chart shows (Phase 8.5's fourth
           pass) — replaces a permanently-visible subtitle line with a native
           tooltip, one less line of always-on text competing for space. */}
