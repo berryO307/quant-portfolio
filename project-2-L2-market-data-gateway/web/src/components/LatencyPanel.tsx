@@ -186,10 +186,10 @@ export function LatencyPanel({ recentSamples, cpuGhz }: LatencyPanelProps) {
           </div>
         )}
 
-        <div className="max-h-[220px] min-h-[72px] flex-none overflow-y-auto rounded-md border border-border">
+        <div className="max-h-[220px] min-h-[72px] flex-none overflow-y-auto rounded-lg border border-border shadow-sm">
           <TailEventsFeed tailEvents={tailEvents} selectedKey={selectedKey} onSelect={(e) => setSelectedKey(e.key)} />
         </div>
-        <div className="flex-none rounded-md border border-border">
+        <div className="flex-none rounded-lg border border-border shadow-sm">
           <StageBreakdown event={selectedEvent} stageMedians={stageMedians} />
         </div>
       </div>

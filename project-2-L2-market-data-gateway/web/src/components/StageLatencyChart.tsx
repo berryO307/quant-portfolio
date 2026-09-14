@@ -40,7 +40,15 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
   const chartTheme = useChartTheme();
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
+  const tooltipRef = useRef<HTMLDivElement>(null);
   const cpuGhzRef = useRef(cpuGhz);
+  // Read inside setCursor, defined once at mount — a closure over `points`
+  // directly would go stale the instant new data arrived, same reasoning
+  // as LatencyChart.tsx's identical pointsRef.
+  const pointsRef = useRef<StagePoint[]>(points);
+  useEffect(() => {
+    pointsRef.current = points;
+  }, [points]);
 
   useEffect(() => {
     cpuGhzRef.current = cpuGhz;
@@ -104,7 +112,45 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
         },
       ],
       legend: { show: false },
-      cursor: { drag: { x: false, y: false } },
+      cursor: { x: true, y: true, drag: { x: false, y: false } },
+      hooks: {
+        setCursor: [
+          (u) => {
+            const tooltip = tooltipRef.current;
+            if (!tooltip) return;
+            const idx = u.cursor.idx;
+            const point = idx == null ? null : pointsRef.current[idx];
+            if (!point) {
+              tooltip.style.display = "none";
+              return;
+            }
+            tooltip.textContent = formatNs(point.valueNs);
+            tooltip.style.display = "block";
+
+            // Boundary-aware placement — same fix as LatencyChart/
+            // DepthCurve's cursor tooltip, applied here too rather than
+            // left with the fixed "+12px from cursor" offset that clips
+            // near a chart's right/bottom edge.
+            const cursorLeft = u.cursor.left ?? 0;
+            const cursorTop = u.cursor.top ?? 0;
+            const tw = tooltip.offsetWidth;
+            const th = tooltip.offsetHeight;
+            const maxLeft = el.clientWidth;
+            const maxTop = el.clientHeight;
+
+            let left = cursorLeft + 10;
+            if (left + tw > maxLeft) left = cursorLeft - tw - 10;
+            left = Math.max(2, Math.min(left, maxLeft - tw - 2));
+
+            let top = cursorTop + 10;
+            if (top + th > maxTop) top = cursorTop - th - 10;
+            top = Math.max(2, Math.min(top, maxTop - th - 2));
+
+            tooltip.style.left = `${left}px`;
+            tooltip.style.top = `${top}px`;
+          },
+        ],
+      },
     };
 
     const plot = new uPlot(opts, [[], []], el);
@@ -142,12 +188,17 @@ export function StageLatencyChart({ title, description, color, points, cpuGhz, m
   }, [points]);
 
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-border bg-panel p-2">
+    <div className="flex flex-col gap-1 rounded-lg border border-border bg-panel p-2 shadow-sm">
       <div className="text-[11px] text-foreground" title={description}>
         {title}
       </div>
       <div className="relative min-h-0" style={{ height: minHeight }}>
         <div ref={containerRef} className="absolute inset-0" />
+        <div
+          ref={tooltipRef}
+          className="pointer-events-none absolute z-10 hidden rounded-sm border border-border bg-card px-1.5 py-1 font-mono text-[10px] tabular-nums text-foreground"
+          style={{ display: "none" }}
+        />
       </div>
     </div>
   );
