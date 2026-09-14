@@ -2,32 +2,40 @@
 #include "types.hpp"
 #include "spsc_ring_buffer.hpp"
 #include "rdtsc.hpp"
+#include "market_data_source.hpp"
 #include <simdjson.h>
 #include <string>
 #include <atomic>
 #include <chrono>
 
-// Synchronous Boost.Beast WSS client for Binance Futures combined stream.
-// Runs in its own thread (call run() from a std::thread).
-// Low-latency design: shared dependencies by reference and in-place Tick population 
-// to minimize copying and synchronization overhead.
-
-class WsClient {
+// Synchronous Boost.Beast WSS client for Bybit's v5 public linear-perp
+// stream. Runs in its own thread (call run() from a std::thread).
+// Low-latency design: shared dependencies by reference and in-place Tick
+// population to minimize copying and synchronization overhead.
+//
+// Formerly WsClient — renamed when IMarketDataSource was extracted so a
+// second exchange (HyperliquidAdapter) could be added without touching
+// this class. Internals (host, subscribe JSON, parse_depth/parse_agg_trade,
+// trigger_resync) are unchanged from before the rename; only the symbol
+// (now a constructor argument instead of a run() argument) and the
+// stream_suffix string (now the source-agnostic Channel enum) moved.
+class BybitAdapter : public IMarketDataSource {
 public:
-    static constexpr int  MAX_RECONNECT_ATTEMPTS = 0; 
+    static constexpr int  MAX_RECONNECT_ATTEMPTS = 0;
     static constexpr auto RECONNECT_BASE_DELAY   = std::chrono::seconds(1);
     static constexpr auto RECONNECT_MAX_DELAY    = std::chrono::seconds(30);
     static constexpr int  RECONNECT_BACKOFF_MULT = 2;
 
     // Takes dependencies by reference to extend their lifespan without taking ownership.
-    WsClient(SpscRingBuffer<Tick, 1024>& queue,
-             std::atomic<bool>& stop_flag,
-             LatencyStore& latency, 
-             std::atomic<uint64_t>& last_u);
+    BybitAdapter(SpscRingBuffer<Tick, 1024>& queue,
+                 std::atomic<bool>& stop_flag,
+                 LatencyStore& latency,
+                 std::atomic<uint64_t>& last_u,
+                 std::string symbol);
 
     // Connect, handshake, and run the read loop until stop_flag is set
     // or an unrecoverable error occurs.
-    void run(const std::string& symbol, const std::string& stream_suffix);
+    void run(Channel channel) override;
 
 private:
     SpscRingBuffer<Tick, 1024>& queue_;
@@ -36,7 +44,7 @@ private:
     std::atomic<uint64_t>&      last_u_;
     std::string                 symbol_;
     std::atomic<uint64_t>       reconnect_count_{0};
-    std::string                 stream_suffix_;
+    Channel                     channel_{Channel::Depth};
 
     // Reusable scratch buffers — never reallocated, just cleared and reused.
     // Sized for orderbook.200 worst case (200 levels per side).

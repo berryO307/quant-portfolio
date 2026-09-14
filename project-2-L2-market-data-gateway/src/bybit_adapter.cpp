@@ -1,4 +1,4 @@
-#include "ws_client.hpp"
+#include "bybit_adapter.hpp"
 #include "parse_utils.hpp"
 
 #include <boost/asio.hpp>
@@ -26,22 +26,22 @@ using     tcp       = net::ip::tcp;
 static const char* WS_HOST = "stream.bybit.com";
 static const char* WS_PORT = "443";
 
-WsClient::WsClient(SpscRingBuffer<Tick, 1024>& queue,
-                   std::atomic<bool>& stop_flag, 
-                   LatencyStore& latency, 
-                   std::atomic<uint64_t>& last_u)
-    : queue_(queue), stop_flag_(stop_flag), latency_(latency), last_u_(last_u) {
+BybitAdapter::BybitAdapter(SpscRingBuffer<Tick, 1024>& queue,
+                   std::atomic<bool>& stop_flag,
+                   LatencyStore& latency,
+                   std::atomic<uint64_t>& last_u,
+                   std::string symbol)
+    : queue_(queue), stop_flag_(stop_flag), latency_(latency), last_u_(last_u), symbol_(std::move(symbol)) {
 
-    // Pre-allocate capacity for the scratch buffers to guarantee zero allocations 
+    // Pre-allocate capacity for the scratch buffers to guarantee zero allocations
     // on the hot path during order book depth updates.
     scratch_bids_.reserve(256);
     scratch_asks_.reserve(256);
     }
 
-// Implement the run() method to connect, read, and dispatch messages until stopped or an unrecoverable error occurs. 
-void WsClient::run(const std::string& symbol, const std::string& stream_suffix) {
-    symbol_         = symbol;
-    stream_suffix_  = stream_suffix;
+// Implement the run() method to connect, read, and dispatch messages until stopped or an unrecoverable error occurs.
+void BybitAdapter::run(Channel channel) {
+    channel_        = channel;
     int  attempts   = 0;
     auto delay      = RECONNECT_BASE_DELAY;
 
@@ -75,8 +75,9 @@ void WsClient::run(const std::string& symbol, const std::string& stream_suffix) 
     }
 }
 
-void WsClient::connect_and_read() {
-    // Single-stream endpoint: /ws/<symbol><stream_suffix>
+void BybitAdapter::connect_and_read() {
+    // Single-stream public endpoint; subscription (which channel) is sent
+    // as a JSON message after connect, not encoded in the URL path.
     // No "stream" or "data" wrapper — message is the raw event directly
     std::string path = "/v5/public/linear";
 
@@ -134,9 +135,9 @@ void WsClient::connect_and_read() {
                [](unsigned char c) { return std::toupper(c); });
 
     std::string sub_msg;
-    if (stream_suffix_ == "@aggTrade") {
+    if (channel_ == Channel::Trades) {
         sub_msg = R"({"op":"subscribe","args":["publicTrade.)" + upper_symbol + R"("]})";
-    } else if (stream_suffix_ == "@depth@100ms") {
+    } else if (channel_ == Channel::Depth) {
         sub_msg = R"({"op":"subscribe","args":["orderbook.200.)" + upper_symbol + R"("]})";
     }
 
@@ -186,7 +187,7 @@ void WsClient::connect_and_read() {
 }
 
 // Signal the consumer to resync by writing a special value to the shared atomic last_u_.
-void WsClient::trigger_resync() {
+void BybitAdapter::trigger_resync() {
     ++reconnect_count_;
     std::cout << "[ws] signalling consumer resync (reconnect #" << reconnect_count_ << ")\n";
     // Write 0 to the shared atomic so the consumer invalidates its book
@@ -194,7 +195,7 @@ void WsClient::trigger_resync() {
 }
 
 // Message dispatcher: routes raw JSON to the appropriate parser based on stream name
-void WsClient::dispatch(simdjson::padded_string_view raw_msg) {
+void BybitAdapter::dispatch(simdjson::padded_string_view raw_msg) {
     uint64_t t1 = rdtscp();
 
     simdjson::dom::element doc;
@@ -244,7 +245,7 @@ void WsClient::dispatch(simdjson::padded_string_view raw_msg) {
     }
 }
 
-bool WsClient::parse_depth(simdjson::dom::element data, Tick& tick, bool is_snapshot) {
+bool BybitAdapter::parse_depth(simdjson::dom::element data, Tick& tick, bool is_snapshot) {
     tick.data = DepthUpdate{};
     auto& d   = std::get<DepthUpdate>(tick.data);
 
@@ -296,7 +297,7 @@ bool WsClient::parse_depth(simdjson::dom::element data, Tick& tick, bool is_snap
     return true;
 }
 
-bool WsClient::parse_agg_trade(simdjson::dom::element data, Tick& tick) {
+bool BybitAdapter::parse_agg_trade(simdjson::dom::element data, Tick& tick) {
     tick.data = AggTrade{};
     auto& t   = std::get<AggTrade>(tick.data);
 
