@@ -1,10 +1,11 @@
 import { toPrice, toQty, type SnapshotRecord, type TimedTrade } from "@/lib/types";
 import { computeDepthLevels, type DepthLevel } from "@/lib/orderBook";
-import { TICKER_SYMBOL } from "@/lib/config";
+import type { InstrumentConfig } from "@/lib/instruments";
 import { use24hChange, type Change24h } from "@/lib/use24hChange";
 
 interface OrderBookLadderProps {
   snapshot: SnapshotRecord | null;
+  instrument: InstrumentConfig;
   hoveredPrice?: number | null;
   onHoverPrice?: (price: number | null) => void;
   lastTrade?: TimedTrade | null;
@@ -47,6 +48,7 @@ function padBottom<T>(arr: T[], size: number): (T | null)[] {
 // have originated from DepthCurve instead).
 export function OrderBookLadder({
   snapshot,
+  instrument,
   hoveredPrice = null,
   onHoverPrice,
   lastTrade = null,
@@ -55,7 +57,7 @@ export function OrderBookLadder({
   // Called unconditionally, before the early return below — React's hook
   // ordering rules don't allow a hook call to be skipped on some renders
   // (e.g. only once a snapshot exists) and not others.
-  const change24h = use24hChange(TICKER_SYMBOL);
+  const change24h = use24hChange(instrument);
 
   if (!snapshot || (snapshot.bids.length === 0 && snapshot.asks.length === 0)) {
     return (
@@ -102,12 +104,19 @@ export function OrderBookLadder({
               maxTotal={maxTotal}
               hovered={row.price === hoveredPrice}
               onHoverPrice={onHoverPrice}
+              priceDecimals={instrument.priceDecimals}
+              qtyDecimals={instrument.qtyDecimals}
             />
           ) : (
             <PlaceholderRow key={`ask-empty-${i}`} />
           )
         )}
-        <TickerRow lastTrade={lastTrade} direction={lastTradeDirection} change24h={change24h} />
+        <TickerRow
+          lastTrade={lastTrade}
+          direction={lastTradeDirection}
+          change24h={change24h}
+          priceDecimals={instrument.priceDecimals}
+        />
         {bidsPadded.map((row, i) =>
           row ? (
             <LadderRow
@@ -117,6 +126,8 @@ export function OrderBookLadder({
               maxTotal={maxTotal}
               hovered={row.price === hoveredPrice}
               onHoverPrice={onHoverPrice}
+              priceDecimals={instrument.priceDecimals}
+              qtyDecimals={instrument.qtyDecimals}
             />
           ) : (
             <PlaceholderRow key={`bid-empty-${i}`} />
@@ -153,10 +164,12 @@ function TickerRow({
   lastTrade,
   direction,
   change24h,
+  priceDecimals,
 }: {
   lastTrade: TimedTrade | null;
   direction: "up" | "down";
   change24h: Change24h;
+  priceDecimals: number;
 }) {
   const color = direction === "down" ? "text-[#f85149]" : "text-[#3fb950]";
   const arrow = direction === "down" ? "↓" : "↑";
@@ -165,7 +178,7 @@ function TickerRow({
     <div className="flex items-center justify-end gap-2 border-y border-border bg-[#0a1424] px-3 py-1 font-mono text-xs tabular-nums">
       {lastTrade ? (
         <span className={`font-semibold ${color}`}>
-          {arrow} {toPrice(lastTrade.price).toFixed(2)}
+          {arrow} {toPrice(lastTrade.price).toFixed(priceDecimals)}
         </span>
       ) : (
         <span className="text-muted-foreground">waiting for trades…</span>
@@ -196,12 +209,16 @@ function LadderRow({
   maxTotal,
   hovered,
   onHoverPrice,
+  priceDecimals,
+  qtyDecimals,
 }: {
   row: DepthLevel;
   side: "bid" | "ask";
   maxTotal: number;
   hovered: boolean;
   onHoverPrice?: (price: number | null) => void;
+  priceDecimals: number;
+  qtyDecimals: number;
 }) {
   const textColor = side === "bid" ? "text-[#3fb950]" : "text-[#f85149]";
   const barColor = side === "bid" ? "bg-[#3fb950]/15" : "bg-[#f85149]/15";
@@ -214,12 +231,14 @@ function LadderRow({
       onMouseLeave={() => onHoverPrice?.(null)}
     >
       <div className={`absolute inset-y-0 right-0 ${barColor}`} style={{ width: `${widthPct}%` }} aria-hidden />
-      <span className={`relative z-10 font-mono tabular-nums ${textColor}`}>{toPrice(row.price).toFixed(4)}</span>
+      <span className={`relative z-10 font-mono tabular-nums ${textColor}`}>
+        {toPrice(row.price).toFixed(priceDecimals)}
+      </span>
       <span className="relative z-10 text-right font-mono tabular-nums text-foreground">
-        {toQty(row.qty).toFixed(3)}
+        {toQty(row.qty).toFixed(qtyDecimals)}
       </span>
       <span className="relative z-10 text-right font-mono tabular-nums text-muted-foreground">
-        {toQty(row.total).toFixed(3)}
+        {toQty(row.total).toFixed(qtyDecimals)}
       </span>
     </div>
   );

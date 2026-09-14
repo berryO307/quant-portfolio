@@ -10,12 +10,11 @@ export const RELAY_WS_URL =
 export const RELAY_HEALTH_URL =
   process.env.NEXT_PUBLIC_RELAY_HEALTH_URL ?? "http://localhost:8080/health";
 
-// Which instrument the 24h-change ticker (see lib/use24hChange.ts) asks
-// Bybit's public REST API about. This is NOT wired to the actual live feed
-// at all — the wire protocol never carries a symbol (see relay/src/types.ts;
-// SampleRecord/SnapshotRecord/TradeRecord are all symbol-agnostic) — it's a
-// standalone assumption matching the C++ gateway's own hardcoded default
-// (src/main.cpp: `argv[2] ?? "btcusdt"`). If this project ever captures a
-// different symbol, this needs to be set to match, or the 24h change shown
-// will be for the wrong instrument.
-export const TICKER_SYMBOL = process.env.NEXT_PUBLIC_TICKER_SYMBOL ?? "BTCUSDT";
+// Which instrument each relay endpoint is actually serving is NOT wired to
+// the wire protocol at all — it never carries a symbol (see
+// relay/src/types.ts; SampleRecord/SnapshotRecord/TradeRecord are all
+// symbol-agnostic) — so lib/instruments.ts's INSTRUMENTS list is a
+// standalone assumption that must be kept in sync with whichever gateway
+// process is actually feeding each relay port. RELAY_WS_URL/
+// RELAY_HEALTH_URL above configure ONLY the first (Bybit BTCUSDT) entry in
+// that list — the rest use fixed localhost ports (see instruments.ts).

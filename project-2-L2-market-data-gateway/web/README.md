@@ -18,9 +18,22 @@ All three are read at build/runtime by the browser bundle, so they must be prefi
 
 | Variable | Default (local dev) | Description |
 | --- | --- | --- |
-| `NEXT_PUBLIC_RELAY_WS_URL` | `ws://localhost:8080/live` | The relay's browser-facing WebSocket endpoint. Use `wss://` for a production relay behind TLS. |
-| `NEXT_PUBLIC_RELAY_HEALTH_URL` | `http://localhost:8080/health` | The relay's health endpoint, polled every 5s by `FeedStatusBanner`. |
-| `NEXT_PUBLIC_TICKER_SYMBOL` | `BTCUSDT` | Instrument the order-book ticker's 24h-change figure is fetched for, directly from Bybit's public REST API (unrelated to the relay feed — see `lib/use24hChange.ts`). Must match whatever symbol the C++ gateway is actually capturing (`src/main.cpp`'s `argv[2]`, default `btcusdt`) — the wire protocol itself carries no symbol field, so nothing else in the pipeline would catch a mismatch. |
+| `NEXT_PUBLIC_RELAY_WS_URL` | `ws://localhost:8080/live` | The relay's browser-facing WebSocket endpoint for the FIRST instrument dropdown entry (BTC/USDT via Bybit) only. Use `wss://` for a production relay behind TLS. |
+| `NEXT_PUBLIC_RELAY_HEALTH_URL` | `http://localhost:8080/health` | Matching health endpoint, polled every 5s by `FeedStatusBanner`. |
+
+The rest of the instrument dropdown (`lib/instruments.ts`) targets fixed
+localhost ports (8081-8087), not individually env-overridable — this is a
+local multi-instrument dev/demo tool, not a deployment with N configurable
+prod endpoints. Each entry needs its own `quant_day1.exe --source=<bybit|
+hyperliquid> <symbol>` + relay pair running on its assigned port before its
+dropdown entry shows live data; an instrument whose gateway isn't running
+just shows the existing "feed unavailable" state. Each instrument also
+carries its own 24h-change data source (Bybit's public REST ticker, or
+Hyperliquid's `metaAndAssetCtxs` markPx/prevDayPx — see `lib/use24hChange.ts`)
+and its own display decimal precision (`priceDecimals`/`qtyDecimals`) — the
+wire protocol itself carries no symbol field, so nothing in the pipeline
+would catch a gateway/dropdown-entry mismatch; keep `lib/instruments.ts` in
+sync with whichever gateway process is actually feeding each port.
 
 ## Deploying to Vercel
 

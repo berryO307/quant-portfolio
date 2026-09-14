@@ -16,6 +16,11 @@ interface DepthCurveProps {
   hoveredPrice: number | null; // raw scaled price (PRICE_SCALE) — see lib/types.ts's toPrice()
   onHoverPrice: (price: number | null) => void;
   minHeight?: number;
+  // Display precision for the active instrument (lib/instruments.ts) —
+  // BTC/XRP/WTI span a wide enough price-magnitude range that a single
+  // hardcoded decimal count would look wrong for most of them.
+  priceDecimals?: number;
+  qtyDecimals?: number;
 }
 
 // Two options, not the earlier four (Phase 8.5's eighth pass): "Tick"
@@ -103,7 +108,14 @@ function buildAlignedData(
   return { data: [xs, bidYs, askYs], rawXs, midPrice };
 }
 
-export function DepthCurve({ snapshot, hoveredPrice, onHoverPrice, minHeight = 200 }: DepthCurveProps) {
+export function DepthCurve({
+  snapshot,
+  hoveredPrice,
+  onHoverPrice,
+  minHeight = 200,
+  priceDecimals = 2,
+  qtyDecimals = 3,
+}: DepthCurveProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const plotRef = useRef<uPlot | null>(null);
   const rawXsRef = useRef<number[]>([]);
@@ -224,7 +236,7 @@ export function DepthCurve({ snapshot, hoveredPrice, onHoverPrice, minHeight = 2
           label: "price",
           font: TICK_FONT,
           labelFont: LABEL_FONT,
-          values: (_u, ticks) => ticks.map((t) => t.toFixed(2)),
+          values: (_u, ticks) => ticks.map((t) => t.toFixed(priceDecimals)),
         },
         { ...UPLOT_AXIS_STYLE, label: "cumulative size", font: TICK_FONT, labelFont: LABEL_FONT },
       ],
@@ -256,7 +268,7 @@ export function DepthCurve({ snapshot, hoveredPrice, onHoverPrice, minHeight = 2
               return;
             }
 
-            tooltip.textContent = `${price.toFixed(2)} · ${size.toFixed(3)}`;
+            tooltip.textContent = `${price.toFixed(priceDecimals)} · ${size.toFixed(qtyDecimals)}`;
             tooltip.style.display = "block";
 
             // Boundary-aware placement (bug reported via screenshot: near
@@ -336,7 +348,12 @@ export function DepthCurve({ snapshot, hoveredPrice, onHoverPrice, minHeight = 2
       tooltipRef.current = null;
     };
      
-  }, [minHeight]);
+    // priceDecimals/qtyDecimals are read inside opts (axis tick labels,
+    // tooltip text) — including them here means switching the active
+    // instrument tears down and rebuilds the plot with correct precision,
+    // rather than keeping the previous instrument's decimal counts baked
+    // into a closure until some other prop happens to change.
+  }, [minHeight, priceDecimals, qtyDecimals]);
 
   // New (possibly throttled) snapshot, OR a depth-selector change -> update
   // the existing instance's data in place, and reposition the permanent
