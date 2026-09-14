@@ -252,3 +252,12 @@ Running log of bugs found during manual inspection/testing, kept out of git unti
 - **Symptom:** The p99 and p99.9 dashed reference lines rendered bunched at the very top of the chart, visually overlapping each other and clipping into the axis boundary instead of reading as distinct lines.
 - **Investigation:** No explicit `range` function was set on the log-scale y-axis (`scales: { y: { distr: 3, log: 10 } }`), so uPlot's default auto-ranging clamped tightly to `[min, max]` of the plotted data — and since p99.9 is frequently at or near the actual max value in the dataset, its own reference line ended up defining (or nearly defining) the top of the visible range, leaving it no room to render as a separate line below the axis edge.
 - `/fix`: Added an explicit `range: (_u, min, max) => [Math.max(min, LOG_FLOOR_NS), max * 1.2]`, giving 20% headroom above whatever the highest value (data point or reference line) actually is. Also reduced all three reference lines' stroke opacity to 70% (`withAlpha`) — full-opacity dashed lines were competing with the scatter points for visual attention rather than reading as de-emphasized context behind them.
+
+---
+
+## 28. Tail-events feed stayed empty despite p99.9 sitting at a clearly elevated ~7.3ms
+
+- **Where:** `web/src/lib/tailAttribution.ts`, `computeLiveTailEvents()`
+- **Symptom:** User reported p99.9 latency reading ~7.3ms (visibly elevated) with the tail-events feed showing no events at all — the panel meant to surface exactly this kind of outlier stayed silent.
+- **Investigation:** The filter was `if (s.latencyNs <= p999Ns) continue;` — i.e. only samples STRICTLY GREATER than the buffer's own 99.9th-percentile value counted as tail events. But `p999Ns` isn't an external threshold; it's computed via `percentile()` as `sorted[idx]`, the value of one real sample drawn from that exact same buffer. Requiring other samples to be strictly greater than a real sample already in the set means at most the single highest-ever sample (assuming no ties) can ever qualify — and with short `--loop`-replayed captured sessions repeating byte-identical latency values every cycle, ties at the tail are common, which can drop the qualifying count to zero.
+- `/fix`: Changed the comparison to `if (s.latencyNs < p999Ns) continue;`, so samples `>= p999Ns` are flagged — the conventional definition of a percentile-based outlier, and one that isn't self-defeating against ties in its own source buffer.

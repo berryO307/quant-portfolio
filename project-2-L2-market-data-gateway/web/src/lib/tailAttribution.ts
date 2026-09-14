@@ -1,4 +1,4 @@
-import type { Attribution, AttributionSplit, HistoricalSummary, LiveSample, TailEvent } from "./types";
+import type { Attribution, LiveSample, TailEvent } from "./types";
 
 // Fourth port of the same tail-attribution logic, after C++ (nowhere —
 // this classification only ever existed in Python/relay), Python
@@ -85,9 +85,22 @@ export function computeLiveTailEvents(samples: LiveSample[]): LiveTailResult {
     publish: median([...samples.map((s) => s.publishNs)].sort((a, b) => a - b)),
   };
 
+  // >= p999Ns, not > p999Ns: by definition of how percentile() picks
+  // sorted[idx], p999Ns itself is the value of a REAL sample near the tail
+  // of this exact buffer — requiring samples to be STRICTLY greater than
+  // their own buffer's 99.9th-percentile value means, at most, only the
+  // single highest sample (assuming no ties) can ever qualify, and if two
+  // or more samples tie exactly at the tail (real timer-resolution ties,
+  // or — as diagnosed live — a short captured session replayed on --loop
+  // reintroducing byte-identical latency values every time it repeats),
+  // NONE of them count, since none is "strictly greater than" a value
+  // they're all equal to. Reported: p99.9 showing a clearly elevated
+  // ~7ms with zero tail events ever appearing below it. >= correctly
+  // flags every sample at or above the threshold, which is also the
+  // conventional definition of a percentile-based outlier.
   const tailEvents: TailEvent[] = [];
   for (const s of samples) {
-    if (s.latencyNs <= p999Ns) continue;
+    if (s.latencyNs < p999Ns) continue;
     const stage = { parse: s.parseNs, bookUpdate: s.bookUpdateNs, publish: s.publishNs };
     const attribution: Attribution =
       s.hostJitterNs > jitter.thresholdNs ? "host_jitter" : dominantStage(stage);
@@ -103,31 +116,4 @@ export function computeLiveTailEvents(samples: LiveSample[]): LiveTailResult {
 
   tailEvents.reverse(); // newest first, matching TimedTrade's convention elsewhere
   return { tailEvents, p50Ns, p99Ns, p999Ns, jitter, stageMedians };
-}
-
-export function tailEventsFromHistorical(summary: HistoricalSummary): TailEvent[] {
-  return summary.tail_events
-    .map((e) => ({
-      key: `hist-${e.index}`,
-      tRecvTsc: e.t_recv_tsc,
-      latencyNs: e.latency_ns,
-      hostJitterNs: e.host_jitter_ns,
-      attribution: e.attribution,
-      stageNs: { parse: e.stage_ns.parse, bookUpdate: e.stage_ns.book_update, publish: e.stage_ns.publish },
-    }))
-    .reverse(); // summary.json lists tail_events in session order; newest first here too
-}
-
-// SessionStatsHeader's current-session jitter/pipeline split, computed
-// client-side from the same tail events LatencyPanel already derives —
-// no relay-side work needed here, unlike the 12h window (which has no raw
-// samples to compute an exact split from at all — see
-// relay/src/rollingStatsAggregator.ts).
-export function attributionSplit(tailEvents: TailEvent[]): AttributionSplit {
-  const jitterTailCount = tailEvents.filter((e) => e.attribution === "host_jitter").length;
-  return {
-    tailCount: tailEvents.length,
-    jitterTailCount,
-    pipelineTailCount: tailEvents.length - jitterTailCount,
-  };
 }
