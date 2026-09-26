@@ -1,4 +1,4 @@
-import type { Attribution, AttributionSplit, HistoricalSummary, LiveSample, TailEvent } from "./types";
+import { sampleKey, type Attribution, type LiveSample, type StageNs, type TailEvent } from "./types";
 
 // Fourth port of the same tail-attribution logic, after C++ (nowhere —
 // this classification only ever existed in Python/relay), Python
@@ -22,28 +22,18 @@ function percentile(sorted: number[], p: number): number {
   return sorted[idx]!;
 }
 
-export interface JitterBaseline {
-  baselineNs: number;
-  thresholdNs: number;
-}
-
-// Same median + 5*MAD approach as find_tail_events() in export_summary.py,
-// with the same fallback to baseline + 1000ns if MAD == 0 (a buffer where
-// jitter readings are all but identical, so any nonzero deviation would
-// otherwise look "infinitely elevated").
-export function computeJitterBaseline(hostJitterNs: number[]): JitterBaseline {
-  const sorted = [...hostJitterNs].sort((a, b) => a - b);
-  const baselineNs = median(sorted);
-  const deviations = sorted.map((v) => Math.abs(v - baselineNs)).sort((a, b) => a - b);
-  const mad = median(deviations);
-  const thresholdNs = baselineNs + (mad > 0 ? 5 * mad : 1000);
-  return { baselineNs, thresholdNs };
-}
-
-function dominantStage(stage: { parse: number; bookUpdate: number; publish: number }): Attribution {
-  if (stage.bookUpdate >= stage.parse && stage.bookUpdate >= stage.publish) return "book-update";
-  if (stage.publish >= stage.parse) return "publish";
-  return "parse";
+// Whichever stage ate the most time. "queue" joined the list once the
+// gateway started exporting its queue-pop stamp: before that, queue wait
+// was folded into bookUpdate and every queue-caused tail event was
+// mislabelled as a slow book update.
+function dominantStage(stage: StageNs): Attribution {
+  const ranked: [Attribution, number][] = [
+    ["parse", stage.parse],
+    ["queue", stage.queue],
+    ["book-update", stage.bookUpdate],
+    ["publish", stage.publish],
+  ];
+  return ranked.reduce((best, cur) => (cur[1] > best[1] ? cur : best))[0];
 }
 
 export interface LiveTailResult {
@@ -51,13 +41,11 @@ export interface LiveTailResult {
   p50Ns: number;
   p99Ns: number;
   p999Ns: number;
-  jitter: JitterBaseline;
-  stageMedians: { parse: number; bookUpdate: number; publish: number };
+  stageMedians: StageNs;
 }
 
 // Flags samples above the buffer's own p99.9 as tail events, attributing
-// each to host_jitter (own hostJitterNs exceeds the buffer's jitter
-// threshold) or whichever stage delta is largest — same rule as the Python
+// each to whichever stage delta is largest — same rule as the Python
 // script, just computed over a rolling live buffer instead of a full
 // session file. Also returns p50/p99/p99.9 and per-stage medians over the
 // same buffer, for the chart's reference lines and the drill-down's "vs
@@ -69,8 +57,7 @@ export function computeLiveTailEvents(samples: LiveSample[]): LiveTailResult {
       p50Ns: 0,
       p99Ns: 0,
       p999Ns: 0,
-      jitter: { baselineNs: 0, thresholdNs: 0 },
-      stageMedians: { parse: 0, bookUpdate: 0, publish: 0 },
+      stageMedians: { parse: 0, queue: 0, bookUpdate: 0, publish: 0 },
     };
   }
 
@@ -78,56 +65,57 @@ export function computeLiveTailEvents(samples: LiveSample[]): LiveTailResult {
   const p50Ns = percentile(sortedLatency, 50);
   const p99Ns = percentile(sortedLatency, 99);
   const p999Ns = percentile(sortedLatency, 99.9);
-  const jitter = computeJitterBaseline(samples.map((s) => s.hostJitterNs));
-  const stageMedians = {
+  const stageMedians: StageNs = {
     parse: median([...samples.map((s) => s.parseNs)].sort((a, b) => a - b)),
+    queue: median([...samples.map((s) => s.queueNs)].sort((a, b) => a - b)),
     bookUpdate: median([...samples.map((s) => s.bookUpdateNs)].sort((a, b) => a - b)),
     publish: median([...samples.map((s) => s.publishNs)].sort((a, b) => a - b)),
   };
 
+  // >= p999Ns, not > p999Ns: by definition of how percentile() picks
+  // sorted[idx], p999Ns itself is the value of a REAL sample near the tail
+  // of this exact buffer — requiring samples to be STRICTLY greater than
+  // their own buffer's 99.9th-percentile value means, at most, only the
+  // single highest sample (assuming no ties) can ever qualify, and if two
+  // or more samples tie exactly at the tail (real timer-resolution ties,
+  // or — as diagnosed live — a short captured session replayed on --loop
+  // reintroducing byte-identical latency values every time it repeats),
+  // NONE of them count, since none is "strictly greater than" a value
+  // they're all equal to. Reported: p99.9 showing a clearly elevated
+  // ~7ms with zero tail events ever appearing below it. >= correctly
+  // flags every sample at or above the threshold, which is also the
+  // conventional definition of a percentile-based outlier.
   const tailEvents: TailEvent[] = [];
+  // Guards against the same tick ever producing two rows in the feed — not
+  // expected (each tick appears once in `samples`), but a rolling buffer
+  // fed by a network stream is exactly the kind of thing that's cheap to
+  // make provably safe against a duplicate rather than trust it can't
+  // happen. Keeps the first occurrence; a duplicate of a real tick would
+  // carry identical data regardless of which copy wins.
+  const seenKeys = new Set<string>();
   for (const s of samples) {
-    if (s.latencyNs <= p999Ns) continue;
-    const stage = { parse: s.parseNs, bookUpdate: s.bookUpdateNs, publish: s.publishNs };
-    const attribution: Attribution =
-      s.hostJitterNs > jitter.thresholdNs ? "host_jitter" : dominantStage(stage);
+    if (s.latencyNs < p999Ns) continue;
+    const key = sampleKey(s.tRecvTsc, s.batchIndex);
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    const stage: StageNs = {
+      parse: s.parseNs,
+      queue: s.queueNs,
+      bookUpdate: s.bookUpdateNs,
+      publish: s.publishNs,
+    };
+    const attribution: Attribution = dominantStage(stage);
     tailEvents.push({
-      key: `live-${s.tRecvTsc}`,
+      key,
       tRecvTsc: s.tRecvTsc,
+      batchIndex: s.batchIndex,
+      batchSize: s.batchSize,
       latencyNs: s.latencyNs,
-      hostJitterNs: s.hostJitterNs,
       attribution,
       stageNs: stage,
     });
   }
 
   tailEvents.reverse(); // newest first, matching TimedTrade's convention elsewhere
-  return { tailEvents, p50Ns, p99Ns, p999Ns, jitter, stageMedians };
-}
-
-export function tailEventsFromHistorical(summary: HistoricalSummary): TailEvent[] {
-  return summary.tail_events
-    .map((e) => ({
-      key: `hist-${e.index}`,
-      tRecvTsc: e.t_recv_tsc,
-      latencyNs: e.latency_ns,
-      hostJitterNs: e.host_jitter_ns,
-      attribution: e.attribution,
-      stageNs: { parse: e.stage_ns.parse, bookUpdate: e.stage_ns.book_update, publish: e.stage_ns.publish },
-    }))
-    .reverse(); // summary.json lists tail_events in session order; newest first here too
-}
-
-// SessionStatsHeader's current-session jitter/pipeline split, computed
-// client-side from the same tail events LatencyPanel already derives —
-// no relay-side work needed here, unlike the 12h window (which has no raw
-// samples to compute an exact split from at all — see
-// relay/src/rollingStatsAggregator.ts).
-export function attributionSplit(tailEvents: TailEvent[]): AttributionSplit {
-  const jitterTailCount = tailEvents.filter((e) => e.attribution === "host_jitter").length;
-  return {
-    tailCount: tailEvents.length,
-    jitterTailCount,
-    pipelineTailCount: tailEvents.length - jitterTailCount,
-  };
+  return { tailEvents, p50Ns, p99Ns, p999Ns, stageMedians };
 }
