@@ -36,26 +36,29 @@ import { RELAY_HEALTH_URL, RELAY_WS_URL } from "./config";
 // magnitude ranges from ~98 (WTI) to ~77,000 (BTC).
 //
 // priceBucketOptions: per-instrument price-grouping choices for the order
-// book ladder/depth curve (see lib/orderBook.ts's computeDepthLevelsBucketed),
-// matching Hyperliquid's own dropdown values exactly (BTC: 1-1000, WTI:
-// 0.001-1) — these WERE a single shared list (0.001-1) copied wholesale
-// from Hyperliquid's WTI UI and wrongly applied to BTC too; fixed to be
-// per-instrument, matching each instrument's own real dropdown.
+// book ladder/depth curve (see lib/orderBook.ts's computeDepthLevelsBucketed
+// and pickBestSnapshot). Deliberately limited to exactly the bucket sizes
+// that match one of Hyperliquid's own native rounding tiers for this
+// instrument — the primary (finest) subscription plus nSigFigs 4/3/2 (see
+// include/coarse_book_state.hpp's COARSE_TIERS) — never an "in-between"
+// size like BTC's old $2/$5 or WTI's old $0.002/$0.005 options.
 //
-// Matching the values alone isn't enough to make every option USEFUL,
-// though: Hyperliquid's public l2Book hard-caps every instrument at 20
-// levels/side (BUGS.md #24), and what price RANGE those 20 levels span is
-// a function of the REQUESTED nSigFigs (significant-figure rounding) —
-// confirmed live: BTC's 20 levels/side span ~$21 at the default/finest
-// rounding, ~$190 at nSigFigs=4, ~$1900 at nSigFigs=3, ~$19000 at
-// nSigFigs=2 (WTI: ~$0.022 / $0.19 / $1.9 / $19 at the same four tiers) —
-// i.e. each coarser bucket tier needs the correspondingly coarser nSigFigs
-// request, or it collapses to ~2 rows total (confirmed live: WTI at
-// bucket=1 with the DEFAULT/finest rounding still applied). See
-// nSigFigsForBucket below and lib/useCoarseBookSnapshot.ts, which fetches
-// that wider-but-coarser view directly from Hyperliquid's public REST API
-// (bypassing the live WS pipeline, which only ever carries the finest
-// rounding) whenever a coarse bucket is selected.
+// This isn't an arbitrary restriction: Hyperliquid hard-caps every
+// subscription at 20 real levels/side, at whichever ONE of those 4 discrete
+// nSigFigs values you request — there is no continuous "give me exactly $5
+// granularity" request. An in-between bucket size can only be served by the
+// one source whose native rounding is at or finer than it (never a coarser
+// tier — pickBestSnapshot correctly refuses that, since it would silently
+// show coarser data mislabeled as the requested size), and that source's
+// own real range is only ~20 levels wide, so an in-between bucket
+// unavoidably renders a visibly thinner ladder than every tier-aligned
+// option next to it in the same dropdown — confirmed live: BTC bucket=5
+// filled only 5 of the ladder's ~20 rows/side, against a full 20 at
+// bucket=1 or bucket=10. There is no fix for this at the client: it would
+// require either fabricating data Hyperliquid never sent, or showing a
+// coarser tier's real data silently mislabeled as a finer bucket size —
+// exactly the bug already fixed twice over (project-2-v2.4.8, v2.4.9).
+// Every option below is chosen so it always fills the full ladder instead.
 export interface InstrumentConfig {
   id: string;
   label: string;
@@ -101,7 +104,7 @@ export const INSTRUMENTS: InstrumentConfig[] = [
     ...relayUrls(8080, RELAY_WS_URL, RELAY_HEALTH_URL),
     priceDecimals: 2,
     qtyDecimals: 3,
-    priceBucketOptions: [1, 2, 5, 10, 100, 1000],
+    priceBucketOptions: [1, 10, 100, 1000],
   },
   {
     id: "wti-hl",
@@ -111,7 +114,7 @@ export const INSTRUMENTS: InstrumentConfig[] = [
     ...relayUrls(8085),
     priceDecimals: 3,
     qtyDecimals: 2,
-    priceBucketOptions: [0.001, 0.002, 0.005, 0.01, 0.1, 1],
+    priceBucketOptions: [0.001, 0.01, 0.1, 1],
   },
 ];
 
