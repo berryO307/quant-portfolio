@@ -72,57 +72,78 @@ export function bucketSinglePrice(rawPrice: number, bucketSizeDisplay: number, r
   return roundDown ? Math.floor(rawPrice / bucketRaw) * bucketRaw : Math.ceil(rawPrice / bucketRaw) * bucketRaw;
 }
 
-// How many populated rows a bucket selection should realistically be able to
-// fill for it to look like a real ladder rather than 1-2 levels padded out
-// with empty placeholder rows. Matches OrderBookLadder's own row cap
-// (MAX_LEVELS_PER_SIDE). Shared here (not re-declared per caller) because
-// pickBestSnapshot below and OrderBookLadder's own rendering need to agree
-// on what "enough range" means for the same reason
-// bucketRawLevels/computeDepthLevelsBucketed below is shared: two
-// independent guesses would silently drift apart.
+// OrderBookLadder's own row cap (MAX_LEVELS_PER_SIDE) and OrderBookDepthSplit's
+// drag-resize clamp both read this directly, so the two stay in sync by
+// construction rather than by two independently-maintained constants
+// silently drifting apart. NOT used by pickBestSnapshot below any more — it
+// used to double as that function's own "enough range" threshold, which was
+// the actual bug (see pickBestSnapshot's own comment): it happened to be
+// numerically entangled with the same ~20-levels-per-side Hyperliquid
+// always returns, which is what made the wrong comparison look plausible
+// for so long.
 export const TARGET_LADDER_ROWS = 20;
 
 // A per-side raw-price span: how far the worst visible level sits from the
-// best one. Used only to judge whether a snapshot has enough REAL range for
-// a given bucket size — never to render anything itself.
+// best one. Used only to judge how much real range a snapshot covers when
+// NOTHING qualifies (the last-resort fallback below) — never to decide
+// whether a snapshot is fine enough for a bucket size; see nativeGapRaw for
+// that (span alone can't answer it — see that function's own comment).
 function sideSpanRaw(side: readonly [number, number][]): number {
   if (side.length === 0) return 0;
   return Math.abs(side[side.length - 1]![0] - side[0]![0]);
 }
 
+// A per-side estimate of a snapshot's OWN native rounding: the average gap
+// between its consecutive real levels. Hyperliquid always returns the same
+// ~20 levels/side regardless of nSigFigs (BUGS.md #24) — a coarser tier's
+// wider total SPAN is entirely explained by a wider gap PER level, not by
+// carrying more real levels, so dividing span by (count - 1) recovers that
+// per-level gap directly from the snapshot's own data (same "never a
+// hardcoded per-instrument table" approach the rest of this file already
+// uses), without needing to know nSigFigs-to-dollar conversion math or the
+// instrument's live price magnitude.
+function nativeGapRaw(side: readonly [number, number][]): number {
+  if (side.length < 2) return 0; // can't measure a gap; treat as arbitrarily fine
+  return sideSpanRaw(side) / (side.length - 1);
+}
+
 // Picks whichever available snapshot (the primary, finest-rounding book, or
 // one of the gateway's coarser nSigFigs tiers — see CoarseSnapshotRecord)
-// actually has enough real price range to fill TARGET_LADDER_ROWS at the
-// caller's chosen bucket size, preferring the FINEST one that qualifies.
+// can actually represent the caller's chosen bucket size WITHOUT snapping
+// it to something coarser, preferring the COARSEST one that qualifies (see
+// below for why coarsest, not finest).
 //
-// This is the fix for a bug that showed up as soon as more than one coarse
-// tier existed: with a single fixed coarse source, EVERY bucket size from
-// some point upward rendered identically, because bucketing a snapshot
-// whose own native level spacing is already wider than the requested
-// bucket is a no-op — grouping-by-$10 does nothing to data that arrived
-// already grouped by $1,000. The fix is not a bigger lookup table (that
-// just moves the same bug to a different bucket size on a different
-// instrument's price scale) — it's picking the snapshot at RUN TIME based
-// on what its own real data actually covers, which is the one thing that
-// stays correct for an instrument this project has never seen, at
-// whatever its native price magnitude turns out to be: a $5 bucket on a
-// $75,000 instrument and a $0.005 bucket on a $1 instrument make exactly
-// the same range/spacing comparison, just at different absolute scales,
-// because everything here is computed from the bucket size and the
-// snapshot's own prices, never from a hardcoded price magnitude.
+// This replaced an earlier version of this same fix that compared each
+// candidate's total SPAN against bucketRaw * TARGET_LADDER_ROWS (20) — a
+// real, reported bug (BUGS.md): because Hyperliquid always returns ~20
+// levels/side regardless of tier, "span" is ALREADY approximately
+// (native gap * 20), so that comparison reduced to roughly
+// "native gap * 20 >= bucketRaw * 20" i.e. "native gap >= bucketRaw" — the
+// OPPOSITE of "is this source fine enough" — which is why every bucket
+// size except the very coarsest option (nothing coarser existed to
+// wrongly promote INTO) silently rendered one tier coarser than selected.
+// Comparing bucketRaw against each candidate's own native gap directly,
+// instead of against a total-span threshold entangled with the same
+// level-count Hyperliquid happens to also use for row-filling, is what
+// actually fixes it rather than re-tuning the same wrong comparison.
 //
-// "Finest that qualifies" (rather than "widest range available") matters
-// for accuracy: a tier with MORE rounding baked in reports coarser
-// quantities at each price, and using an unnecessarily coarse tier for a
-// bucket size the primary (or a less-rounded tier) could already cover
-// perfectly well would throw away real precision for no reason.
+// Coarsest qualifying, not finest: once a candidate's native gap is <=
+// bucketRaw, bucketing it at bucketRaw is exact — no precision is lost
+// relative to the request either way, because the DISPLAYED result is
+// capped at bucketRaw regardless of which qualifying source produced it.
+// The old "prefer finest" comment worried about losing real precision from
+// an unnecessarily coarse tier — a real concern under the old, span-based
+// qualifying test (which could accept a coarser tier even when a finer one
+// ALSO had "enough range"), but moot now: among sources that all render
+// bucketRaw exactly, the coarsest one is the one with genuinely more real
+// range/depth behind it, so preferring it fills more of the ladder for
+// free, not at the cost of anything the user asked to see.
 export function pickBestSnapshot(
   primary: SnapshotRecord | null,
   coarseByTier: ReadonlyMap<number, CoarseSnapshotRecord>,
   bucketSizeDisplay: number
 ): SnapshotRecord | CoarseSnapshotRecord | null {
   const bucketRaw = Math.max(1, Math.round(bucketSizeDisplay * PRICE_SCALE));
-  const needed = bucketRaw * TARGET_LADDER_ROWS;
 
   // Candidates ordered finest-first: the primary snapshot (no rounding at
   // all) beats every coarse tier, and among coarse tiers a HIGHER nSigFigs
@@ -132,9 +153,16 @@ export function pickBestSnapshot(
   candidates.push(...[...coarseByTier.values()].sort((a, b) => b.nsigfigs - a.nsigfigs));
 
   const fits = (snap: SnapshotRecord | CoarseSnapshotRecord): boolean =>
-    sideSpanRaw(snap.bids) >= needed && sideSpanRaw(snap.asks) >= needed;
+    nativeGapRaw(snap.bids) <= bucketRaw && nativeGapRaw(snap.asks) <= bucketRaw;
 
-  const best = candidates.find(fits);
+  // Coarsest (last) qualifying candidate, not the first/finest one — see
+  // this function's own comment above for why. candidates is ordered
+  // finest-first, so scanning all of it and keeping the last match found
+  // is exactly "coarsest that still qualifies."
+  let best: SnapshotRecord | CoarseSnapshotRecord | null = null;
+  for (const c of candidates) {
+    if (fits(c)) best = c;
+  }
   if (best) return best;
 
   // Nothing has enough range for this bucket size (can happen briefly at
