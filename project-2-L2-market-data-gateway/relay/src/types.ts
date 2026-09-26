@@ -124,7 +124,7 @@ export interface LatencyBucketSnapshot {
 
 export interface StatsMessage {
   type: "stats";
-  rolling12h: HistogramSnapshot;
+  rollingWindow: HistogramSnapshot;
   currentSession: HistogramSnapshot;
   latencyBuckets: LatencyBucketSnapshot[];
 }
