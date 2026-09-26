@@ -6,6 +6,12 @@
 
 > The original target venue was Binance Futures; live ingest pivoted to Bybit due to geographic restrictions on the deployment IP. The architecture is exchange-agnostic — the recovery and sequence-gap logic was designed against Binance's `pu`/`u` semantics and adapted for Bybit's equivalent.
 
+> **Venue-dependent, but no longer platform-limited.** The 7.4µs figure was measured against Bybit Futures, which has since been removed (this gateway is Hyperliquid-only now). Against Hyperliquid's much lower live rate (~3–13 ticks/sec) the consumer spends most cycles polling an empty queue, so the poll's own wake latency — not the SPSC ring's transit cost — dominates.
+>
+> Current live measurement on native Windows, both instruments running: **queue transit p50 = 3.8µs, p90 = 10.7µs, p99 = 28.5µs, max = 29.9µs, with 0% of samples above 1ms.**
+>
+> Earlier revisions of this README and `notes/Engineering_Notes.md` §8–§9 reported a 10–16ms queue-wait tail here and attributed it to the Windows scheduler quantum being an unfixable platform limit. That was wrong: every instance pinned to the same hard-coded cores, so running two instruments put two busy-spinning consumers on one core and they time-sliced against each other at exactly the quantum. Each process now claims a disjoint core triple at startup. See §10 for the correction and the before/after numbers.
+
 ---
 
 ## Architecture at a Glance
@@ -110,6 +116,63 @@ This is a quant-developer portfolio piece. The technical decisions map directly 
 ### Scope Discipline
 
 This project deliberately **does not** use SBE, Aeron, DPDK, or kernel bypass. Each was considered and excluded in favor of depth on the components that were retained. The ability to articulate *why* something was left out is itself part of the engineering signal — a kernel-bypass NIC integration to chase nanoseconds is meaningful only against a real strategy that needs it. This system is sized correctly for retail-API exchange ingestion and is honest about that boundary.
+
+### The Zero-Cost Constraint
+
+Everything here is built and measured on a **home desktop** — 12 logical cores, consumer DDR, no ECC, no colocation, no budget. That is a permanent constraint of this project, not a stage it will grow out of, and it is worth naming up front because it changes which optimisations are even available.
+
+The gateway allocates two resources per instrument, and they hit their limits at very different places:
+
+| Resource | Per instrument | Available here | Instruments before the wall |
+| --- | ---: | ---: | ---: |
+| Dedicated cores | 3 (producer / consumer / canary) | 12 logical | **3** |
+| Locked order-book RAM | ~32.5 MB (2 × 16 MB price ladders) | 64 MB default `RLIMIT_MEMLOCK` (Ubuntu 26.04, measured) | **2** |
+
+**The core wall is an artifact of our own design, not of the hardware.** Measured per tick: parse 9.59 µs, book update 6.67 µs, publish 0.39 µs. BTC delivers ~3.2 ticks/sec. That is **54 µs of real work per second** sitting on 3,000,000 µs/sec of allocated capacity — 0.002% utilisation. The cores are not full of work, they are full of *spinning*, and spin cost is constant rather than per-instrument. One spinning consumer can drain fifty ring buffers for the same core budget as one. The wall dissolves as soon as cores are allocated per *shard* instead of per *instrument*.
+
+**The RAM wall is real.** [`order_book.hpp`](include/order_book.hpp) uses the price itself as an array index — that is what makes best-bid lookup ~0.6 ns, since there is no search, only a subscript. The cost of the trick is that the array must span the entire price range: `MAX_LEVELS = 2'000'000` × 8 bytes × 2 sides ≈ 32.5 MB per instrument, and it is `mlock`/`VirtualLock`'d resident. One hundred instruments is **3.25 GB of locked memory**. No amount of cleverness makes that free — it can only be shrunk, by indexing levels *relative to the mid* in a ~64 K-slot window and rebasing on drift (~512 KB/side, a 64× reduction) instead of indexing absolute price from zero.
+
+#### Why production systems buy server hardware instead
+
+A matching engine is **embarrassingly parallel across symbols and strictly serial within one symbol** — an order in AAPL can never match against MSFT, but every AAPL order can match every other AAPL order under legally-binding price-time priority. That single property dictates the physical architecture of every major exchange:
+
+| Because… | The consequence |
+| --- | --- |
+| Symbols never interact | Symbols are **sharded across many machines**. Nasdaq's TotalView-ITCH is distributed over multiple multicast channels split by symbol range; the partitioning is visible from outside the exchange. |
+| One symbol cannot be parallelised | **Clock speed beats core count.** The critical path is a single thread, so a 64-core part does not help and a faster core does. Exchange hardware selection looks nothing like a web company's. |
+| Disk is ~10⁵× too slow | **The book is permanently RAM-resident.** Matching never touches disk; the journal is written by separate infrastructure off the critical path — the same hot-path rule this project follows, enforced with a far larger budget. |
+| Light has a finite speed | **Colocation with length-equalised fibre.** Nasdaq's US equities matching runs from Carteret, NJ (NYSE from Mahwah). Racks are sold in the same building and every customer's fibre is cut to identical length so nobody is physically nearer the engine. At ~5 ns per metre, cable length *is* latency. |
+| Text parsing is expensive | **Fixed-layout binary protocols** (ITCH for data, OUCH for order entry) — a message is a few dozen bytes you cast a struct over. |
+| The kernel is a latency tax | **Kernel bypass or FPGA feed handlers**; packets reach userspace without traversing the kernel network stack. |
+
+Two rows of that table are worth reading against this project's own numbers.
+
+The first is **parse cost**. Our 9.59 µs `simdjson` parse against a near-free struct cast over a fixed-offset binary message is roughly a 1000× gap — and it is not a defect in this code. Hyperliquid publishes JSON over WebSocket; there is no parsing your way out of a text protocol. The largest single stage cost in this pipeline is a *venue protocol artifact*, and distinguishing costs that are yours to fix from costs that are imposed on you is most of the engineering judgement.
+
+The second is **memory hardware**, which is where a desktop and a server genuinely diverge:
+
+| | This desktop | Exchange-class server |
+| --- | --- | --- |
+| RAM ceiling | ~64–128 GB | 1–6 TB |
+| Memory channels | 2 | 8–12 per socket |
+| ECC | None — a flipped bit silently corrupts a book | Corrected and logged |
+| Clock behaviour | Turbo / C-states float for power saving | Pinned flat in BIOS; determinism beats peak |
+| SMT | On — two threads contend per core | Typically disabled on matching cores |
+| NUMA | Single socket, invisible | Explicit; memory allocated on the socket that will touch it |
+| Page size | 4 KB default | 1 GB huge pages |
+
+The last row is easy to miss, and its cost is a function of scale rather than a constant. A 32.5 MB book spans ~8,300 4 KB pages, but the ladder is *sparse* — only a narrow band of levels around the mid is ever touched, so at one or two instruments the hot page set is a handful of entries and TLB pressure is negligible. Live measurement confirms it: the book-update stage runs at **p50 30 ns, p90 690 ns**, already the fastest stage in the pipeline. The pressure arrives with instrument count — a hundred books touching six to eight pages each approaches the capacity of a typical L2 TLB, at which point book accesses begin paying page-table walks of hundreds of nanoseconds. Huge pages collapse that mapping to a few entries regardless of instrument count: a problem solved by *purchasing* the right hardware rather than by writing better code.
+
+Relative-indexed ladder windowing — shrinking 32.5 MB to ~1 MB per instrument by indexing levels against the mid instead of against zero — is first of all what makes a hundred instruments fit under `RLIMIT_MEMLOCK`. Whether it is *also* a latency fix depends on which ticks you look at, and an aggregate median hides the answer:
+
+| book-update stage | p50 | p99 |
+| --- | ---: | ---: |
+| trade tick (field writes only) | 200 ns | 700 ns |
+| depth tick (full snapshot diff, ~20 levels/side) | **5,030 ns** | 6,550 ns |
+
+At ~125 ns per level against a ~2 ns array write, the depth path is not spending its time on arithmetic. The plausible explanation is that those ~40 levels land on ~40 different pages of a sparse 16 MB array — cache and TLB misses, which is precisely what a compact window would remove. That mechanism is untested here, so it is a hypothesis rather than a measured result; what is measured is that removing the per-depth-tick heap allocation from the same function bought only 11% (5,640 → 5,030 ns), so the cost lives somewhere other than the allocator.
+
+Real exchanges pull both levers: shard the work, **and** buy the machine. A zero-cost budget removes the second lever entirely, leaving only sharding and shrinking. That is precisely why relative-indexed ladder windowing matters far more here than it would at Nasdaq — they can afford the address space, this project has to earn it back in design.
 
 ---
 
