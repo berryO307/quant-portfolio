@@ -20,3 +20,13 @@ Thumbs.db
 # Local logs
 error.log
 *.log
+
+# Internal LLM-workflow docs — kept locally for context, not tracked on GitHub.
+# notes/Engineering_Notes.md is NOT here: it's real engineering documentation,
+# cited by name from README.md, not a Claude-workflow artifact.
+/BUGS.md
+/CLAUDE.md
+/PHASES.md
+/HYPERLIQUID_MIGRATION_PROMPT.md
+/web/CLAUDE.md
+/web/AGENTS.md
