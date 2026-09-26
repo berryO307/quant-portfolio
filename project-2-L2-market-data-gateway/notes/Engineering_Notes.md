@@ -19,6 +19,10 @@
 5. [Cross-Cutting Foundations](#5-cross-cutting-foundations)
 6. [Latency Profile & Production Guarantees](#6-latency-profile--production-guarantees)
 7. [References](#7-references)
+8. [Incident Report — 2026-09-15: Hyperliquid Live-Data Latency Anomalies](#8-incident-report--2026-09-15-hyperliquid-live-data-latency-anomalies)
+9. [Follow-up — 2026-09-15: WSL2 Migration, Validated Against Live Data](#9-follow-up--2026-09-15-wsl2-migration-validated-against-live-data)
+10. [Correction — 2026-09-16: The Queue-Wait "Scheduler Quantum" Tail Was Self-Inflicted](#10-correction--2026-09-16-the-queue-wait-scheduler-quantum-tail-was-self-inflicted)
+11. [Correction — 2026-09-16: Five Measurement Defects That Manufactured Their Own Tail](#11-correction--2026-09-16-five-measurement-defects-that-manufactured-their-own-tail)
 
 ---
 
@@ -887,4 +891,388 @@ References are grouped by topic. Where a section in this document filled in theo
 
 ---
 
+## 8. Incident Report — 2026-09-15: Hyperliquid Live-Data Latency Anomalies
+
+Section 6's latency profile was measured against Bybit Futures, at Bybit's throughput. This incident concerns what the same architecture measures against Hyperliquid, the venue this gateway now exclusively targets (Bybit support was removed — `feat(cpp)!: remove Bybit support entirely, Hyperliquid is now the only source`). The two venues' update rates differ by roughly an order of magnitude, and several latent issues that Bybit's throughput never exercised turned out to be directly visible at Hyperliquid's.
+
+### Symptom
+
+The live per-stage latency charts (Parse, Queue-wait, Book-update, Publish — see the web viewer's `LatencyPanel`) showed persistent, non-random structure that a healthy pipeline should not produce:
+
+- **Book-update**: a dense population around 10–300ns (correct — a bitboard update is genuinely that fast) and a *second*, persistent population at 1–20ms, present continuously, not as occasional spikes.
+- **Queue-wait**: two widely separated bands, one around 1µs and a dominant one at 1–16ms.
+- **Vertical burst stripes**: many samples sharing (near-)identical elapsed time, recurring every few seconds.
+- Overall point density lower than expected for a "parse/update/publish as fast as possible" hot path.
+
+First noticed from the live web dashboard; investigated by a diagnosis-only pass (no code changes) that produced ground-truth live captures, cross-referenced against `push.log` heartbeats and the actual source, before any fix was attempted.
+
+### Root causes found
+
+**1. Every Hyperliquid depth tick took a 32MB full-ladder reseed path meant for rare resyncs.**
+`HyperliquidAdapter::parse_depth()` (`hyperliquid_adapter.cpp:244`) sets `d.pu = 0` unconditionally, because Hyperliquid's `l2Book` channel has no incremental-delta variant — every message genuinely is a complete snapshot. `OrderBook::apply_depth()` (`order_book.cpp:230`, pre-fix) treated `pu == 0` as *"snapshot mid-stream — full reseed"* and called `seed()`, which clears two `PriceLadder`s — `std::array<int64_t, MAX_LEVELS>` with `MAX_LEVELS = 2'000'000`, 16MB each, 32MB total — via `memset`, plus a `std::cerr` write, on every single depth tick. `PriceLadder::clear()`'s own comment ("safe to call on reconnect without latency spike") confirms the intended call frequency was rare resyncs, not ~1–2% of all live traffic. 32MB memset lands squarely in the 1–3ms range measured; page faults on cold array regions explain the 20ms+ tail.
+
+**2. The consumer's empty-queue poll (`sleep_for(100µs)`) is not reliable at that resolution on Windows.**
+`main.cpp`'s consumer loop falls back to `std::this_thread::sleep_for(100µs)` when both ring buffers are empty. This exact class of problem was already found and fixed once in this codebase, for a different thread: the jitter canary (`jitter_canary.hpp`) documents that a bare `sleep_for(100µs)` "did not actually sleep at all" under its own empirical test — Windows' timer granularity does not honor sub-millisecond `sleep_for` requests reliably in either direction. The canary was given a hybrid sleep-then-spin fix; the consumer loop was not.
+
+**3. The gateway runs at `High` priority, not `RealTime`, silently.**
+`SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS)` (`main.cpp`, pre-fix) only logged a warning if the Win32 call itself failed. It did not fail — Windows silently substitutes `HIGH_PRIORITY_CLASS` for an unprivileged (non-Administrator) caller instead of erroring, which is standard, documented Win32 behavior, but meant the substitution went completely unnoticed. Confirmed live via `Get-Process | PriorityClass`: `High` on both running instances.
+
+**4. Ring-buffer-full drops were silent and uninstrumented.**
+`HyperliquidAdapter::dispatch()` calls `queue_.push(...)` at two call sites (`hyperliquid_adapter.cpp:205`, `:225`) without checking the boolean return. `SpscRingBuffer::push()` returns `false` and drops the item when full (capacity 1024) — a real failure mode with no counter, no log line, and (before this fix) no way to ever know if it had fired.
+
+### Fixes applied
+
+**Fix 1 — diff-based snapshot apply, not full reseed.** `OrderBook::apply_depth()` now applies a `pu==0` snapshot as a diff against the price set held after the *previous* snapshot: every price in the new snapshot is written via the existing O(1) `PriceLadder::set()`; any price held last time but absent now is explicitly cleared (Hyperliquid signals removal by omission, not a zero-qty row, so a diff — not a blind overwrite — is required for correctness). A genuine full reseed is now reserved for the one case that actually needs it: `tick_step` (the ladder's index granularity, re-inferred per snapshot) changing, which invalidates the existing index mapping outright. Cost dropped from O(MAX_LEVELS) to O(levels in the snapshot) — ~20–200 for Hyperliquid, not 2,000,000.
+
+*Why this approach over alternatives*: the obvious alternative — just call `apply_levels()` (the existing delta-apply path) directly on every `pu==0` snapshot — is wrong for correctness, not just slower: `apply_levels()` only touches prices present in the incoming message, so a price that legitimately dropped off the book (present last snapshot, absent this one) would never be cleared and would sit in the ladder forever, silently wrong. The diff-based approach was chosen specifically to preserve full-snapshot correctness while avoiding the full-ladder cost.
+
+*Correctness verification*: a throwaway differential test (`OrderBook` heap-allocated — two stack-local instances would exceed the default thread stack, the same `STATUS_STACK_OVERFLOW` class of failure this codebase's `RelayPushClient` comment already documents) fed an identical sequence of synthetic snapshots to two independent `OrderBook` instances: one via the new diff-apply path (`apply_depth()`), one via the old path (`seed()` called directly on every step, reproducing pre-fix behavior exactly since `seed()` itself is unchanged). The sequence exercised: routine qty changes, a non-best level dropping out, the best bid dropping out (best-price fallback), a new best bid appearing, the best ask dropping out, one side going fully empty and being repopulated, a large simultaneous multi-level churn, and a genuine `tick_step` change forcing the real-reseed branch followed by fine-grained levels confirming the diff-tracking state doesn't leak stale prices across it. All 12 steps matched `best_bid`/`best_ask`/full `top_bids`/`top_asks` exactly between the two paths.
+
+**Fix 2 — spin-then-sleep backoff on the consumer's empty-queue poll.** Mirrors the spin+`PAUSE` backoff already used elsewhere in the same file (the pre-seed wait loop) rather than the jitter canary's spin-until-elapsed shape, which doesn't fit: the canary's job is to measure a fixed wait, the consumer's job is to grab work the instant it exists. Up to 256 `pop()` attempts with a `PAUSE` hint between them before falling back to `sleep_for(100µs)`.
+
+**Fix 3 — explicit priority-class verification.** After requesting `REALTIME_PRIORITY_CLASS`, the code now calls `GetPriorityClass()` to see what was actually granted, and logs an explicit warning naming the achieved class if it doesn't match, rather than trusting a Win32 call whose success only means "didn't error."
+
+**Fix 4 — `queue_overflow_dropped` counter.** Both `queue_.push()` call sites now check the return value and increment a dedicated `std::atomic<uint64_t>` (distinct from the pre-existing `depth_dropped`, which counts book-sequencing rejects, not ring-buffer-full drops) on failure, threaded through to the consumer heartbeat log alongside the existing `dropped=`/`queue=` fields.
+
+### Before/after verification (live, both instruments)
+
+**Fix 1** — 90s live capture, BTC (:8080) and WTI (:8085), before vs. after:
+
+| | BTC before (n=499) | BTC after (n=646) | WTI before (n=249) | WTI after (n=113) |
+| --- | ---: | ---: | ---: | ---: |
+| book-update samples ≥ 1ms | 3.4% (17/499) | **0/646 (0.00%)** | 6.8% (17/249) | **0/113 (0.00%)** |
+| book-update max | 21.3ms | **12.1µs** | 22.0ms | **11.3µs** |
+
+Re-confirmed on the fully-integrated build (all four fixes applied together): 0/496 and 0/89 samples ≥1ms on BTC/WTI respectively — no regression from Fixes 2–4.
+
+*Side effect surfaced, not introduced, by Fix 1*: the pre-existing crossed-book safety check (`best_bid_ >= best_ask_` in `apply_depth()`) was unreachable for Hyperliquid before this fix — the old `pu==0` branch always called `seed()` and returned immediately, before the check could run. Fix 1's diff-apply path falls through to it. Live on WTI, this check now fires roughly every ~10s (`[book] CROSSED bid=... ask=... — forcing resync`), each occurrence forcing a full consumer resync (re-wait for WS snapshot). BTC showed zero such events in the same window. This did not happen under the old code not because the condition didn't occur, but because the check could never run — a momentarily crossed book was being silently written through instead of triggering a resync. This is very likely a genuine, pre-existing WTI-specific data characteristic (a much thinner/lower-liquidity instrument than BTC) now correctly detected rather than silently accepted, but it was **not** one of the four fixes scoped for this round and was not investigated further or altered.
+
+**Fix 2** — same live-capture methodology, `queue_ns` split by whether the queue was left empty or backlogged at pop:
+
+| | queue_depth==0, before | queue_depth==0, after |
+| --- | ---: | ---: |
+| BTC p90 / max | 11.6ms / 15.8ms | 10.3ms / 15.9ms |
+| WTI p90 / max | 11.2ms / 16.0ms | 11.3ms / 15.7ms |
+
+**This fix did not measurably move the tail.** The spin+pause backoff is a real improvement in the microsecond-scale common case (catches a tick without ever calling into the OS scheduler), and is harmless, but the dominant 10–16ms tail is essentially unchanged before and after. This is a negative result, reported as measured rather than as hypothesized: the queue-wait tail's true cause is more likely genuine OS-level thread scheduling preemption — consistent with Fix 3's finding that this process runs at `High`, not `RealTime`, priority. A microsecond-scale change to how the consumer polls cannot compensate for the OS simply not scheduling the thread for several milliseconds at a stretch, which no amount of spinning or sleeping *inside* that thread can prevent. Left in place because it is a correct, low-risk improvement on its own terms; the queue-wait tail itself remains open (see Known Remaining Gaps).
+
+**Fix 3** — confirmed live: the warning now fires and correctly names the achieved class —
+```
+[main] WARNING: requested REALTIME_PRIORITY_CLASS but the process is actually running at
+High (0x80). Windows silently substitutes a lower class instead of failing this call when
+not run elevated. Run as Administrator for true realtime scheduling.
+```
+matching `Get-Process L2DataCapture | PriorityClass` → `High` exactly. **Not verified**: behavior when actually launched elevated (Administrator) — this session has no interactive UAC elevation available, so whether the warning correctly stays silent under a true `RealTime` grant is unconfirmed.
+
+**Fix 4** — verified against the real `SpscRingBuffer<Tick,1024>` type in an isolated throwaway harness (not part of the build): pushed 1100 items with no popping (1024 capacity), confirmed exactly 76 rejected, counter incremented to exactly 76, ring drained cleanly to 1024 items and accepted new pushes afterward. Live: `queue_overflow_dropped=0` on both instruments as of this writing — no overflow has yet been observed in production, consistent with the diagnostic report's original finding (the largest live burst measured, 135–138 ticks in one Hyperliquid trades frame, stays well under the 1024 capacity even without Fix 1). The counter exists so a future overflow, if the ring capacity or burst sizes ever change, will be visible instead of silent.
+
+### Known remaining gaps
+
+- **Queue-wait's 10–16ms tail is unresolved.** Fix 2 was the hypothesized fix and, measured live, did not close it. The leading remaining hypothesis is OS-level thread scheduling preemption given the process's actual `High` (not `RealTime`) priority (Fix 3), but this has not been directly confirmed — it would need OS-level scheduler tracing (e.g., ETW context-switch events correlated against this thread's ID) to establish definitively, which is out of scope for this round.
+- **Multi-second gaps between messages** (27–35 per 90s window in the original diagnostic capture) remain inconclusive: plausibly explained by Hyperliquid's live update rate for these instruments (~3–13 ticks/sec) rather than a stall, but this cannot be distinguished from a producer-thread stall without an independent WS-frame-arrival timestamp captured outside this process (e.g., a packet capture). Not attempted this round — flagged as future work, not resolved.
+- **The debug dashboard's Plotly charts have no y-axis unit label**, and Plotly's bare `1/2/5` log-tick labels are easy to misread across decades — this is very likely why an earlier chart reading misidentified a population as "~2–5" that was actually ~200–300ns. This is chart-track work (`debug-dashboard/app.py`), explicitly out of scope for this hot-path round, but documented here so it isn't rediscovered from scratch.
+- **WTI's crossed-book frequency** (surfaced by Fix 1, see above) has not been investigated beyond confirming the safety check is now correctly reachable. Whether this reflects genuine thin-book conditions, a bid/ask ordering issue somewhere upstream of `OrderBook`, or something else, is open.
+
+---
+
+## 9. Follow-up — 2026-09-15: WSL2 Migration, Validated Against Live Data
+
+§8's "Known remaining gaps" left the queue-wait tail unresolved: round 8's Fix 2 (spin-then-sleep on the empty-queue poll) did not move it, and the leading hypothesis was OS-level thread scheduling preemption tied to the process running at Windows' `High` priority rather than true `RealTime` (§8's Fix 3). This entry tests that hypothesis directly by running the same gateway under WSL2 (Ubuntu 26.04, kernel 6.6.87.2-microsoft-standard-WSL2) and comparing live numbers against native Windows, rather than assuming a different OS would help.
+
+**Scope note:** round 8's Fix 1 (diff-based snapshot apply, replacing the per-tick full ladder reseed) was carried forward unchanged and re-verified under WSL2 below — not re-litigated.
+
+### Build changes
+
+`CMakeLists.txt` had no Linux path at all — `find_package(Boost COMPONENTS system thread)` fails outright on a modern distro (Ubuntu 26.04 ships Boost 1.90, where System has been header-only since 1.69 and no `boost_system` CMake config package is installed at all), the MSYS2 sysroot prefix path and `ws2_32`/`mswsock` link targets don't exist on Linux, and unconditional `-static` linking breaks glibc's NSS-based DNS resolution (`getaddrinfo`), which Boost.Asio's resolver needs to reach Hyperliquid at all. All four are now `if(WIN32)`-gated; Linux requests only `Boost::thread` (a real compiled target on both platforms) and adds `Threads::Threads`.
+
+Most of the actual C++ source was already cross-platform: `mmap_writer.hpp` (`mmap`/`mlock`/`munlock` vs. `CreateFileMapping`/`VirtualLock`) and `thread_utils.hpp` (`pthread_setaffinity_np` vs. `SetThreadAffinityMask`) already had complete `#ifdef _WIN32`/`#else` branches. Two gaps needed filling, both matching round 8's Fix 3 discipline of re-querying what was actually achieved rather than trusting a call's return value alone:
+
+- `main.cpp`'s realtime-priority request had a Windows branch only. Added a Linux `#else`: `sched_setscheduler(0, SCHED_FIFO, ...)`, then `sched_getscheduler()` to confirm what was actually granted, warning explicitly (with the exact `errno`/`strerror`) if it wasn't `SCHED_FIFO`.
+- `thread_utils.hpp`'s `configure_self_high_performance()` already called `pthread_setschedparam(SCHED_FIFO)` per hot-path thread but discarded its return value entirely. Now checks it and re-confirms via `pthread_getschedparam()`, warning per-thread on failure.
+
+Both warnings are the direct Linux analogue of the Windows `RealTime`→`High` silent-downgrade finding — except Linux's failure mode is *not* silent: `sched_setscheduler`/`pthread_setschedparam` return a real error (`EPERM`) when the caller lacks `CAP_SYS_NICE`, unlike Windows' `SetPriorityClass`, which reports success while quietly substituting a lower class. Confirmed live, both directions (see below).
+
+Ubuntu 26.04 ships `libsimdjson-dev` as an apt package directly — no vendoring or source build needed.
+
+### 1. TSC reliability — checked first, as required before trusting anything else
+
+```
+/proc/cpuinfo flags: constant_tsc PRESENT, nonstop_tsc PRESENT
+calibrate_tsc_ghz() [100ms window]: 3.80001 GHz
+independent 2s cross-check (wall-clock vs. TSC-derived): error = -0.00012% (unprivileged), -0.00009% (root)
+second independent 100ms calibration, taken seconds later: drift from first = 0.00003%
+```
+**Verdict: fully reliable.** Sub-thousandth-of-a-percent agreement between `std::chrono::steady_clock` and TSC-derived timing over an independent 2-second window, at both privilege levels. WSL2's Hyper-V-based virtualization exposes the invariant TSC directly rather than emulating it — every downstream measurement in this entry can be trusted on the same terms as the native-Windows numbers it's compared against.
+
+### 2. Scheduling policy — achieved, but only with `CAP_SYS_NICE`
+
+| | requested | `sched_setscheduler` return | `sched_getscheduler()` achieved |
+| --- | --- | --- | --- |
+| unprivileged (uid 1000) | `SCHED_FIFO` | fails, `EPERM` | `SCHED_OTHER` (fallback, matches request failure) |
+| root (uid 0) | `SCHED_FIFO` | succeeds | `SCHED_FIFO` (confirmed) |
+
+Same requirement as Windows' Administrator elevation, but this session could actually test the elevated case here (no interactive UAC was available for the native-Windows tests all round). Root genuinely achieves real-time scheduling; Windows' equivalent was never confirmed to, in this environment.
+
+### 3. `mlock` — succeeds, with a nuance the first isolated test missed
+
+An initial isolated 32MB test (matching the two `PriceLadder`s' combined size) succeeded at **both** privilege levels — already a direct improvement over Windows' `VirtualLock` Error 1453 (`ERROR_WORKING_SET_QUOTA`), which failed on every native-Windows startup this session regardless of privilege. But the production mmap region is 610MB (`max_expected_ticks × sizeof(NormalizedTick)`), not 32MB, and re-testing at that scale showed the real picture:
+
+```
+root:          "[MmapWriter] Warm-up complete. Pages locked." — no warning, 610MB locked.
+unprivileged:  "[WARNING] mlock failed (requires sudo or ulimit -l): Cannot allocate memory"
+               /proc/self/limits: Max locked memory = 67,108,864 bytes (64MB) soft AND hard
+```
+`mlock` on Linux is gated by `RLIMIT_MEMLOCK` (64MB by default on this WSL2 install), not privilege directly — an unprivileged process can lock up to that limit for free, but the 610MB production region exceeds it. Root succeeds not because of a scheduling capability but because `CAP_IPC_LOCK` (which root holds by default) bypasses the limit entirely. **Verdict: better than Windows either way** — Windows failed outright regardless of privilege; Linux succeeds unconditionally as root and would succeed unprivileged too with either a raised `ulimit -l` or `CAP_IPC_LOCK` granted directly (`setcap cap_ipc_lock=eip`), neither of which requires full root.
+
+### 4. Empty-queue poll granularity — live capture, the actual question this round exists to answer
+
+90-second capture, both instruments, three configurations. Native-Windows numbers are the most recent (post round-8, all four fixes applied) from §8.
+
+| `queue_depth==0` | Native Windows | WSL2, unprivileged | WSL2, root (`SCHED_FIFO`) |
+| --- | ---: | ---: | ---: |
+| BTC p90 | 10.3ms | **170µs** | **130µs** |
+| BTC max | 15.9ms | **369µs** | **199µs** |
+| WTI p90 | 11.3ms | **169µs** | **127µs** |
+| WTI max | 15.7ms | **199µs** | **192µs** |
+
+**This is a genuine, large improvement — roughly 60–120x on p90, 40–80x on max — and it holds even without root.** That's the important, non-obvious part: root/`SCHED_FIFO` narrows the tail further (root's max is ~1.5–2x better than unprivileged's), but it is not the dominant factor — most of the improvement comes from being on Linux at all. The most likely explanation, consistent with §8's own finding for the jitter canary, is that Windows' default scheduler timer granularity (documented in this codebase as making a bare `sleep_for(100µs)` behave unpredictably) is simply coarser than Linux's, independent of scheduling *class* — `SCHED_OTHER` under Linux's CFS scheduler still resolves sub-millisecond waits far more precisely than Windows achieves even at `High` priority.
+
+Book-update (round 8's Fix 1, carried forward, re-verified under WSL2):
+```
+root:          BTC 0/304 (0.00%) >=1ms, max=72.3µs   |  WTI 0/240 (0.00%) >=1ms, max=64.7µs
+unprivileged:  BTC 0/214 (0.00%) >=1ms, max=17.6µs    |  WTI 0/287 (0.00%) >=1ms, max=32.9µs
+```
+Fix 1 holds exactly as designed — no regression from the platform change.
+
+Throughput and drops, both configurations, both instruments: `dropped=0`, `queue_overflow_dropped=0`, zero reconnects (`connect attempt #1` exactly twice per instrument — once per adapter thread — no retries) across all runs. No evidence of the migration itself introducing instability.
+
+### 5. Network path — measurably worse per-connection, irrelevant to steady state
+
+```
+TCP connect time to Hyperliquid, 5 requests each:
+  WSL2:            ~53-56ms consistently
+  native Windows:  ~17-22ms (one 219ms outlier, likely cold TLS session)
+Total request time (connect + TLS + response): comparable on both (~220-400ms range, overlapping)
+```
+WSL2's NAT networking layer adds a real, consistent ~30ms of one-time TCP handshake overhead versus native Windows — a genuine regression, not noise. It does not matter for this gateway's steady-state numbers above: the WS connection is established once and held open for the session, so this cost is paid once at startup (and again only on an actual reconnect, of which there were zero in every live run this round), not per message. It would matter more for a deployment with frequent reconnects. `RELAY_WS_HOST` also cannot be `localhost` from inside WSL2 in this install's default NAT networking mode — the Windows host relay was reached via the WSL2 virtual gateway IP (`172.20.128.1`) instead; a mirrored-networking `.wslconfig` would restore `localhost` semantics but was not applied (a global networking-mode change, out of scope to make unilaterally).
+
+### Verdict
+
+**WSL2 is a large, verified net improvement for this gateway's dominant remaining latency problem (the queue-wait tail), and does not regress anything measured.** Specifically:
+
+- **Resolves** (live-verified, not assumed): the queue-wait tail — 40–120x improvement, holds with or without root, confirmed against fresh native-Windows numbers captured in the same session for a clean comparison.
+- **Resolves**: `mlock`/`VirtualLock` — succeeds at production scale as root (Windows failed unconditionally); succeeds unprivileged too, up to a raisable `ulimit`.
+- **Resolves, with a caveat matching Windows exactly**: real-time scheduling — achievable, but requires root/`CAP_SYS_NICE`, the direct analogue of Windows' Administrator requirement. Unlike Windows, this was actually tested and confirmed achievable here.
+- **No effect either way**: TSC reliability (already fine on Windows; confirmed equally fine here) and Fix 1's book-update correctness (holds unchanged on both platforms).
+- **Regresses, but doesn't matter for this workload**: per-connection TCP handshake latency (~30ms slower), a one-time cost on a long-lived WS connection.
+
+The migration is worth pursuing on this evidence. The main practical cost is operational, not technical: it depends on the deployment being willing to run with `CAP_SYS_NICE`/root for the full benefit (though the majority of the improvement is present even without it), and on addressing the `localhost`-vs-gateway-IP networking difference for anything else running alongside it on the Windows host.
+
+---
+
+## 10. Correction — 2026-09-16: The Queue-Wait "Scheduler Quantum" Tail Was Self-Inflicted
+
+§8 and §9 both concluded that the 13–16ms queue-wait tail was a Windows platform limit — the OS scheduler quantum — unfixable in-process and resolvable only by moving to Linux. **That conclusion was wrong, and this entry corrects it.** The tail was core contention between our own two gateway processes, and it is fixed on Windows.
+
+### What the earlier rounds got wrong, and why
+
+The reasoning chain was: the tail pins to ~15.6ms; 15.6ms is the default Windows timer/scheduler quantum; therefore the OS is the limit. Every number supported it, and the WSL2 comparison in §9 (40–120x better) appeared to confirm it. The error was never testing the obvious alternative explanation for "a thread didn't run for exactly one quantum": **something else was on its core.**
+
+Two measurements broke it open.
+
+**First**, the assumed mechanism was checked directly rather than assumed. The consumer's empty-queue path was believed to be over-sleeping in `std::this_thread::sleep_for(100us)`, rounded up to a 15.6ms timer tick. Measured on this box:
+
+```
+requested wait = 100us
+  std::this_thread::sleep_for(100us)        p50=  0.1us  p90=  0.1us  max=  2.5us
+  CREATE_WAITABLE_TIMER_HIGH_RESOLUTION     p50=499.4us  p90=516.8us  max=686.9us
+  sleep_for(100us) after timeBeginPeriod(1) p50=  0.1us  p90=  0.1us  max=  0.5us
+```
+
+`sleep_for` at that resolution is a near-no-op on this toolchain — it does not sleep 15.6ms, it returns in ~100ns (matching `jitter_canary.hpp`'s own long-standing note). The consumer was effectively busy-polling already. So a 15.6ms queue-wait could not be the consumer waiting too long; it had to be the consumer **not running at all** for a full quantum. (Note also that the "high-resolution" timer is 5x *worse* than what it replaces here — a fix applied on reasoning alone would have made things worse.)
+
+**Second**, the core assignments were compile-time constants:
+
+```cpp
+inline constexpr int CORE_PRODUCER = 2;
+inline constexpr int CORE_CONSUMER = 3;
+inline constexpr int CORE_CANARY   = 4;
+```
+
+Every instance of the gateway pinned to the same three cores. The normal deployment here runs **one process per instrument** — BTC and WTI — so core 3 held *two* `THREAD_PRIORITY_TIME_CRITICAL` consumer threads, both busy-spinning on their own ring buffer, neither ever yielding. Windows time-slices two such threads at the scheduler quantum. A tick pushed while the *other* instance held the core sat in the ring for that entire quantum. Same for the producers on core 2 and the canaries on core 4 — which is why host jitter showed the identical 16ms signature.
+
+### Measurements
+
+Same binary, same 2-minute methodology, BTC feed:
+
+| queue wait | both instances on 2/3/4 | one instance alone | both, disjoint cores |
+| --- | ---: | ---: | ---: |
+| p50 | 14,750 ns | 3,720 ns | **3,800 ns** |
+| p90 | 11.8 ms | 42.1 µs | **10.7 µs** |
+| p99 | 15.4 ms | 58.1 µs | **28.5 µs** |
+| max | 16.0 ms | 59.2 µs | **29.9 µs** |
+| samples > 1ms | 555/1638 (33.9%) | 0/382 (0.00%) | **0/383 (0.00%)** |
+
+p99 improves **540x**, and not a single sample exceeds 1ms with both instruments live. The largest remaining values (29.9µs) sit on a `batch=20` frame with `queue_depth` walking 0,1,2,3,4,5 — sequential drain of one burst, which is the correct and expected shape, not a stall.
+
+Host jitter followed: spikes 21/1638 (1.3%) → 4/383 (1.0%), max 16.5ms → 20.5µs. The canaries no longer share core 4.
+
+### Fix
+
+`CORE_*` became runtime values (`HotCores` + `hot_cores()`), and each process claims a disjoint triple at startup via `configure_hot_cores()`: it walks base, base+3, base+6… and takes the first triple no other instance holds, using a named mutex (Windows) or an `O_EXCL` + `flock` lock file (POSIX) as the claim. `GATEWAY_CORE_BASE` overrides the starting point; the collision check still applies on top, so an explicit-but-taken value moves rather than silently double-booking.
+
+Auto-claiming rather than documenting "pass different cores per instance" is deliberate: the failure was **silent** — no error, no dropped tick, no log line, just a 540x latency regression that looked exactly like a platform limit. Operator discipline is not an adequate guard against a defect with no visible symptom. Live confirmation:
+
+```
+BTC:  [cores] claimed 2/3/4 for this instance
+WTI:  [cores] claimed 5/6/7 for this instance
+```
+
+### Consequences for §8 and §9
+
+- §8's "Known remaining gaps: queue-wait's 10–16ms tail is unresolved" — **resolved**, and it was never a platform limit.
+- §9's verdict that WSL2 is required to fix the queue-wait tail — **the premise was wrong**. WSL2's measured advantage there (130–370µs vs 10–16ms) was real but was measured against a Windows configuration crippled by this bug. Native Windows with disjoint cores now measures **28.5µs p99**, better than the WSL2 numbers §9 recorded. WSL2's other findings stand on their own (TSC reliability, `mlock` at production scale, honest `EPERM` on scheduling); the queue-wait argument for migrating does not.
+- The general lesson: "the number equals a known OS constant" is evidence about the *mechanism*, not proof that the OS is the *cause*. Something in our own process was being scheduled against, and the quantum was simply how long that took to resolve.
+
+---
+
 *These notes were derived from first-principles reasoning, hands-on implementation, and the references above. Where a theoretical foundation is given, the working code in this repository implements that foundation directly — the architecture is the theory, made executable.*
+
+---
+
+## 11. Correction — 2026-09-16: Five Measurement Defects That Manufactured Their Own Tail
+
+§10 established that the multi-millisecond queue-wait tail was core contention between instances, and fixed it. What remained after that fix looked like a real, smaller tail: an `e2e p99` around 200 µs, a 10.5 ms outlier that never went away, and a stream of 50–95 µs "queue wait" events that the UI ranked as the worst in every session.
+
+None of it was latency. All three were defects in how the pipeline measured itself. This section records them because two of the three had survived multiple rounds of tail-chasing, and one was introduced while fixing another.
+
+### 11.1 The 10.5 ms outlier was the seed handshake
+
+Over a 27-minute BTC session (n=5,204), **every** sample above 1 ms — all 30 of them — landed at `t=0.0 s`, inside a single `batch_size=30` frame, with `queue_depth` counting 29 down to 0 and host jitter at 9 ns. Not one occurred after startup.
+
+The consumer cannot apply a trade to an unseeded book, so it waits for the first depth snapshot ([`main.cpp`](../src/main.cpp), the `waiting for WS snapshot` loop). Trades arriving during that wait queue up legitimately. When the seed lands and the main loop starts, those trades pop carrying a `t_parse` from ~10 ms earlier — and report it as queue wait.
+
+Benign behaviour, fatal reporting: one startup artifact pinned `p99.9` at 10.5 ms for the entire life of the process, and the UI's tail-events feed ranked the seed burst as the worst events of the session.
+
+Fixed with a TSC fence armed the instant seeding completes and re-armed on every `RESYNC` (a gap-driven resync reproduces the artifact exactly). Pre-seed ticks are still processed and still written to the mmap output — only their latency sample is withheld, and the count surfaces on the heartbeat as `pre_seed_skipped` rather than being silently dropped.
+
+### 11.2 `book_cycles` measured the queue wait and called it book-update time
+
+`latency.record(latency.book_cycles, t4 - tick.t2_tsc)` — but `t2` is stamped on the **producer** thread before the queue push, so `t4 - t2` spans the entire queue wait.
+
+The signature was hiding in plain sight in `data/latency.csv`:
+
+| column | p99 | max |
+| --- | ---: | ---: |
+| `queue_transit_ns` | 13,233,000 | 13,234,900 |
+| `book_update_ns` | 13,233,000 | 13,234,900 |
+
+Bit-identical. A stage that is genuinely 20 ns at p50 cannot match the queue's p99 to the nanosecond; it was reporting the queue plus itself.
+
+This is why §10's working notes cited a "6.67 µs book-update stage" and reasoned about TLB pressure to explain it. The stage was never 6.67 µs — that number was queue wait wearing the book's label. Corrected to `t4 - t3`, the stage measures **p50 20 ns, p90 250 ns**.
+
+[`export_pipeline.hpp`](../include/export_pipeline.hpp) had documented the correct split (`t_book - t_pop`) all along, and both the web app and the debug dashboard computed it correctly. Only the C++ CSV path kept the defect.
+
+### 11.3 Gating three of four stages misaligned every CSV row
+
+Introduced while fixing 11.1, caught in verification rather than by reasoning.
+
+`LatencyStore::dump()` zips the four stage vectors **by index**. `parse_cycles` was appended by the producer thread; the other three by the consumer. Adding a pre-seed filter to the consumer's three left `parse` recording the pre-seed ticks the others now skipped:
+
+```
+queue=993  parse=1026  book=993  publish=993     <- row i pairs one tick's parse
+                                                    with a different tick's queue wait
+```
+
+The producer/consumer split could never have been reliable: the producer parses ahead of the consumer and keeps recording for ticks the consumer drops on queue overflow. It had matched by luck (off-by-one in earlier sessions), not by construction.
+
+Fixed by deriving parse from the timestamps the `Tick` already carries (`t_parse_begin_tsc..t2_tsc`) and recording all four stages at **one site after `t5`** — all-or-nothing, so the `goto RESYNC` paths (sequence gap, or `apply_depth` rejecting a tick) can no longer contribute to some columns and not others. That drift was a further 2 rows on a 3-minute run before it was closed.
+
+```
+queue=1014  parse=1014  book=1014  publish=1014
+```
+
+### 11.4 `analysis/export_summary.py` carried 11.2 plus a missing stage
+
+The same `t_book - t_parse` error, and `parse_ns` computed as `t_parse - t_recv` — cumulative rather than marginal, so member *k* of a batched frame was charged for the parse cost of members 0..k-1.
+
+Worse, the script had **no queue column at all**. `STAGE_COLUMNS` listed three stages, so tail attribution could never name queue wait; every queue-caused tail event was attributed to "book-update", with a `book_update_ns` inflated by exactly the queue wait that caused it. The summary JSON it emitted was also missing the `queue` field that `StageNs` in [`types.ts`](../web/src/lib/types.ts) declares.
+
+After correction, on the same session file, the single tail event reads:
+
+```
+latency=149,239 ns   attribution=queue
+  parse            285.0 ns
+  queue         97,108.1 ns
+  book_update       23.8 ns
+  publish          391.9 ns
+```
+
+Optional-column fallbacks (`t_parse_begin ?? t_recv`, `t_pop ?? t_parse`) match what the web app and dashboard already do, so pre-existing session files degrade to the old conflated stages instead of failing to load.
+
+### 11.5 What the pipeline actually measures
+
+With all four defects closed, and both instruments live on disjoint cores:
+
+| | p50 | p90 | p99 | max |
+| --- | ---: | ---: | ---: | ---: |
+| parse | 260 ns | 7,650 ns | 11,520 ns | 44,200 ns |
+| queue wait | 4,605 ns | 42,435 ns | 76,775 ns | 81,775 ns |
+| book update | **20 ns** | 250 ns | 9,820 ns | 10,660 ns |
+| publish | 350 ns | 1,320 ns | 1,840 ns | 2,240 ns |
+
+Queue samples above 1 ms: **0 of 1,014**.
+
+The queue-wait column still looks wide, and that is the one remaining measurement artifact rather than a stall. Hyperliquid delivers trades as arrays; every member of a frame shares one `t_parse`, so member #211 is charged for the serial drain of members #1–#210. The ramp is the proof — on a 211-trade frame, member 0 waits 550 ns and member 210 waits 93,970 ns, with the whole frame draining in 138.8 µs (658 ns per trade). Nothing waited on anything.
+
+Isolating frames that carry a single tick gives the pipeline's honest number:
+
+| single-tick frames | p50 | p90 | p99 | max |
+| --- | ---: | ---: | ---: | ---: |
+| queue wait | 545 ns | 3,145 ns | 11,765 ns | 41,295 ns |
+| **end-to-end** | **9,215 ns** | 23,935 ns | **27,055 ns** | 32,455 ns |
+
+**e2e p99 is ~27–33 µs, not the ~200 µs the unsegmented percentile reports.**
+
+### 11.6 The stages did not add up to the total, and 57% of attributions were wrong
+
+Reported from the dashboard: a 68.5 µs spike on the total-latency chart whose stage panels showed 42.3 µs of queue wait. The timing lined up; the magnitude did not.
+
+The four stages span `t_parse_begin → t_publish`. Total latency spans `t_recv → t_publish`. The segment between `t_recv` and `t_parse_begin` was plotted **nowhere** — verified across 780 live samples with zero mismatches, the shortfall equals that segment every time.
+
+It is exactly zero for `batch_index == 0` (301 samples, max 0 ns), which is why single-tick frames always reconciled and nothing looked wrong for months. For batch members it is the time the tick sat in an already-received frame while its earlier siblings were parsed and pushed — `t_parse_begin` for tick *k* is tick *k−1*'s parse-complete stamp. On the same session it ran p50 16.75 µs, max 82.78 µs, and held **53.1% of all measured latency**:
+
+```
+worst sample (#112/112):
+  t_recv -> t_parse_begin     82,780 ns   <-- CHARTED NOWHERE
+  parse                          170 ns
+  queue                       44,910 ns
+  book                            20 ns
+  publish                        270 ns
+  TOTAL                      128,149 ns
+```
+
+The second-order consequence was worse than the missing chart. Attribution picks the largest of the stages it can see, so for a batched tick the true dominant contributor was **not a candidate at all** and the event was labelled whichever visible stage happened to be biggest. Re-running attribution over 1,014 samples with the segment added as a fifth candidate:
+
+| dominant stage | 4 candidates | 5 candidates |
+| --- | ---: | ---: |
+| parse | 308 | 308 |
+| **in-frame wait** | — | **581** |
+| queue | **703** | **122** |
+| book-update | 3 | 3 |
+
+**57.3% of samples changed their dominant stage.** Most of what the UI reported as queue wait was in-frame wait.
+
+Fixed by adding a fifth stage, `in-frame wait` = `t_parse_begin - t_recv`, across `web/src/lib` (`StageNs`, `LiveSample`, `Attribution`, `useRelayConnection`, `tailAttribution`, theme/colour tables), `LatencyPanel` / `StageBreakdown` / `LatencyChart`, `debug-dashboard/app.py` and `analysis/export_summary.py`.
+
+**No gateway change was required.** `t_recv` and `t_parse_begin` were already exported; nothing had ever charted the difference. The five stages now tile `t_recv → t_publish` exactly — verified at `|total - sum(stages)| = 0.000000 ns` across all 1,014 samples.
+
+The invariant worth keeping: **a stage set that does not sum to the total it sits beneath is not a decomposition, and any attribution computed from it is guesswork.** The residual check is one line and would have caught this immediately.
+
+### 11.7 The transferable lesson
+
+Four of these five defects produced numbers that were *plausible*. A 10.5 ms p99.9 looked like a scheduler stall. A 6.67 µs book-update invited a cache-locality explanation, and got one. A 200 µs e2e p99 looked like a pipeline that needed optimising.
+
+Each was investigated on its merits before anyone checked whether the measurement was sound. §10 recorded that a number matching a known OS constant is evidence about mechanism, not proof of cause; the same discipline applies one level lower. **Before optimising a stage, confirm the stage measures what its name claims.** The cheapest check available here — two CSV columns being bit-identical at p99 — would have caught 11.2 at any point in the preceding three rounds.
+
+---
