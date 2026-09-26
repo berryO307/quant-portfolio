@@ -105,8 +105,37 @@ private:
     void update_best_bid(int64_t changed_price, int64_t new_qty);
     void update_best_ask(int64_t changed_price, int64_t new_qty);
 
+    // Applies one side of a Hyperliquid-style FULL snapshot (pu==0: every
+    // message is the complete book, not a delta) as a diff against the
+    // previous snapshot's price set, instead of a full ladder reseed. See
+    // OrderBook::apply_depth's comment for why this exists.
+    void apply_full_snapshot_diff(const std::vector<PriceLevel>& levels,
+                                   PriceLadder& ladder,
+                                   std::vector<int64_t>& prev_prices);
+
     PriceLadder bids_;
     PriceLadder asks_;
+
+    // Price set actively held on the ladder as of the last full-snapshot
+    // apply — small (bounded by however many levels the exchange sends per
+    // snapshot, ~20-200), not related to MAX_LEVELS. Diffed against each
+    // new snapshot so a price that dropped out gets explicitly cleared;
+    // Hyperliquid signals removal by omission, not by a zero-qty row.
+    std::vector<int64_t> prev_bid_prices_;
+    std::vector<int64_t> prev_ask_prices_;
+
+    // Reusable scratch for apply_full_snapshot_diff's new-price set. Exists
+    // purely so that function stops allocating: it used to build a fresh
+    // std::vector per call, which meant 2 mallocs + 2 frees on the consumer
+    // thread for every depth tick (once per side). Measured live, the
+    // book-update stage on a depth tick ran p50 5,640 ns against 150 ns on a
+    // trade tick, for a diff of only ~20 levels per side.
+    //
+    // The buffer is swapped with prev_*_prices_ rather than move-assigned, so
+    // the outgoing buffer becomes next call's scratch and both keep their
+    // capacity — steady state is zero allocations. Shared by both sides
+    // because the two calls are strictly sequential on one thread.
+    std::vector<int64_t> diff_scratch_;
 
     // Cached best prices — updated incrementally on each depth event.
     // Avoids scanning the full ladder on every tick.

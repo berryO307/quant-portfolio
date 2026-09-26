@@ -1,7 +1,8 @@
 #include "order_book.hpp"
 #include "AsyncLogger.hpp"
+#include <algorithm>
 #include <iostream>
-#include <cstring> 
+#include <cstring>
 #include <cstdint>
 #include <bit>
 
@@ -199,6 +200,30 @@ void OrderBook::seed(const OrderBookSnapshot& snap) {
     best_bid_ = 0;
     best_ask_ = 0;
 
+    // The ladder was just wiped, so whatever apply_full_snapshot_diff()
+    // thought was "currently on the ladder" before this call is no longer
+    // valid — in particular, base_price is about to move (init() below), so a
+    // stale raw price from before this reseed does not even refer to the same
+    // slot anymore. Cleared here for that reason, then REPOPULATED below from
+    // this snapshot's own levels.
+    //
+    // Leaving it empty was a bug. prev_*_prices_ is not "what is left to
+    // clear" — it is "what this ladder currently holds", which is what the
+    // next diff-apply walks to find prices the new snapshot dropped. Seeding
+    // the ladder and then telling the next diff that the ladder is empty means
+    // that diff can clear nothing, so any price present in the seed but absent
+    // from the very next frame stays on the book.
+    //
+    // Caught by diffing exported snapshots against the raw wire frames that
+    // produced them: the first three snapshots of a session each carried
+    // exactly one extra price level, with every shared quantity matching its
+    // frame exactly (missing=0, extra=1, qty_all_match=true). It self-heals
+    // once a later frame reintroduces and then drops the stale price, which is
+    // why only the opening snapshots were wrong — and why it also fires after
+    // every gap-driven resync, not just at startup.
+    prev_bid_prices_.clear();
+    prev_ask_prices_.clear();
+
     if (snap.bids.empty() || snap.asks.empty()) return;
 
     // One tick_step for both ladders (the instrument has one real tick
@@ -211,8 +236,19 @@ void OrderBook::seed(const OrderBookSnapshot& snap) {
     asks_.init(snap.asks.front().price, tick_step); // asks: lowest (best) price = base
 
     // qty > 0 guard matches Binance snapshot semantics; zero-qty levels in snapshots are malformed, not deletes
-    for (const auto& l : snap.bids) if (l.qty > 0) bids_.set(l.price, l.qty);
-    for (const auto& l : snap.asks) if (l.qty > 0) asks_.set(l.price, l.qty);
+    // The same qty>0 filter decides what goes into prev_*_prices_, so the
+    // recorded price set is exactly the set of levels actually on the ladder.
+    for (const auto& l : snap.bids) {
+        if (l.qty > 0) { bids_.set(l.price, l.qty); prev_bid_prices_.push_back(l.price); }
+    }
+    for (const auto& l : snap.asks) {
+        if (l.qty > 0) { asks_.set(l.price, l.qty); prev_ask_prices_.push_back(l.price); }
+    }
+    // apply_full_snapshot_diff only iterates prev_prices linearly, so order is
+    // not required for correctness — sorted to match the state it hands back
+    // via swap(), so the two paths produce the same shape.
+    std::sort(prev_bid_prices_.begin(), prev_bid_prices_.end());
+    std::sort(prev_ask_prices_.begin(), prev_ask_prices_.end());
 
     // Seed best price cache from snapshot top; avoids a full ladder scan on first best_bid()/best_ask() call
     best_bid_       = snap.bids[0].price;
@@ -231,27 +267,59 @@ bool OrderBook::apply_depth(const DepthUpdate& upd) {
     if (!seeded_) return false;
 
     // Bybit: simple monotonic u check
-    // upd.pu == 0 means this is a snapshot (rare after initial seed)
+    // upd.pu == 0 means this is a snapshot (rare after initial seed on
+    // Bybit-shaped deltas — but for Hyperliquid, EVERY message sets pu=0,
+    // since Hyperliquid's l2Book has no incremental-delta variant at all;
+    // see hyperliquid_adapter.cpp's parse_depth comment).
+    //
+    // That used to mean every single depth tick called seed() below,
+    // which clears() both PriceLadders — a 32MB memset (2 x MAX_LEVELS
+    // int64_t slots) plus re-inferring tick_step and re-anchoring
+    // base_price — on every tick, not just genuine resyncs. Measured live:
+    // this alone produced a persistent 1-20ms population in the
+    // book-update stage on every real depth tick (~1-2% of all traffic),
+    // while a normal trade tick's book-update cost is ~20ns.
+    //
+    // A full ladder reseed is only actually NEEDED when the index mapping
+    // itself would change (tick_step differs from what's currently
+    // anchored) or the book isn't seeded yet (handled by the early return
+    // above). Otherwise — the overwhelmingly common case — this snapshot
+    // is applied as a diff against the previous snapshot's price set:
+    // every price present is (re)written, and any price that was held
+    // last time but is absent now (dropped off the book) is explicitly
+    // cleared. Hyperliquid signals removal by omission, not a zero-qty
+    // row, which is exactly why a diff (not a blind overwrite) is
+    // required for correctness — apply_levels() alone would leave stale,
+    // no-longer-real levels sitting in the ladder forever.
     if (upd.pu == 0) {
-        // Snapshot mid-stream — full reseed
-        OrderBookSnapshot snap;
-        snap.last_update_id = upd.u;
-        snap.bids = upd.bids;
-        snap.asks = upd.asks;
-        seed(snap);
-        return true;
+        int64_t new_tick_step = infer_tick_step(upd.bids, upd.asks);
+        if (new_tick_step != bids_.tick_step) {
+            // Genuine resync: the ladder's own index mapping is stale.
+            OrderBookSnapshot snap;
+            snap.last_update_id = upd.u;
+            snap.bids = upd.bids;
+            snap.asks = upd.asks;
+            seed(snap);
+            return true;
+        }
+
+        apply_full_snapshot_diff(upd.bids, bids_, prev_bid_prices_);
+        apply_full_snapshot_diff(upd.asks, asks_, prev_ask_prices_);
+
+        last_update_id_ = upd.u;
+        last_u_ = upd.u;
+    } else {
+        // Delta: u must be greater than last seen
+        if (static_cast<uint64_t>(upd.u) <= static_cast<uint64_t>(last_u_)) {
+            return false;   // stale or duplicate
+        }
+
+        apply_levels(upd.bids, bids_);
+        apply_levels(upd.asks, asks_);
+
+        last_update_id_ = upd.u;
+        last_u_ = upd.u;
     }
-
-    // Delta: u must be greater than last seen
-    if (static_cast<uint64_t>(upd.u) <= static_cast<uint64_t>(last_u_)) {
-        return false;   // stale or duplicate
-    }
-
-    apply_levels(upd.bids, bids_);
-    apply_levels(upd.asks, asks_);
-
-    last_update_id_ = upd.u;
-    last_u_ = upd.u;
 
     // Sanity check: book must never cross. Best bid >= best ask is impossible
     // in a healthy market — it indicates a transient inconsistency from out-of-order
@@ -263,6 +331,53 @@ bool OrderBook::apply_depth(const DepthUpdate& upd) {
     }
 
     return true;
+}
+
+// Applies one side of a full snapshot (pu==0 case) as a diff against the
+// price set that was active after the LAST full-snapshot apply, rather
+// than relying on a full ladder clear(). O(levels log levels) — levels is
+// whatever the exchange sends per snapshot (~20-200 for Hyperliquid), not
+// MAX_LEVELS, so this is orders of magnitude cheaper than seed().
+void OrderBook::apply_full_snapshot_diff(const std::vector<PriceLevel>& levels,
+                                          PriceLadder& ladder,
+                                          std::vector<int64_t>& prev_prices) {
+    // qty>0 guard matches seed()'s own: a zero-qty row in a full snapshot
+    // is malformed, not a real level (Hyperliquid signals absence by
+    // omitting the price entirely, not by sending qty=0).
+    // Reused across calls — see diff_scratch_'s declaration for why this is
+    // not a local. clear() keeps the capacity, so after the first couple of
+    // depth ticks this loop allocates nothing.
+    std::vector<int64_t>& new_prices = diff_scratch_;
+    new_prices.clear();
+    new_prices.reserve(levels.size());
+    for (const auto& l : levels) {
+        if (l.qty > 0) {
+            ladder.set(l.price, l.qty);
+            new_prices.push_back(l.price);
+        }
+    }
+    std::sort(new_prices.begin(), new_prices.end());
+
+    // Anything held after the previous snapshot that isn't part of this
+    // one has dropped off the book — clear it explicitly, since nothing
+    // else will (the new snapshot simply doesn't mention it).
+    for (int64_t old_price : prev_prices) {
+        if (!std::binary_search(new_prices.begin(), new_prices.end(), old_price)) {
+            ladder.set(old_price, 0);
+        }
+    }
+
+    // swap, not move-assign: move-assign would free prev_prices' buffer and
+    // leave new_prices empty with no capacity, so the next call allocates
+    // again. Swapping hands the outgoing buffer back to the scratch, which
+    // then gets clear()ed and refilled without touching the allocator.
+    prev_prices.swap(new_prices);
+
+    if (&ladder == &bids_) {
+        best_bid_ = bids_.get_best_bid();
+    } else {
+        best_ask_ = asks_.get_best_ask();
+    }
 }
 
 // Single overload replaces the dual std::map overloads whose header/cpp signatures were mismatched (int64_t vs double)

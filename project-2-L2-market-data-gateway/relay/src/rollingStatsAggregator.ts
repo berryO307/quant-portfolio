@@ -1,47 +1,20 @@
 import type { DataSource } from "./dataSource.js";
-import type { IngestRecord } from "./types.js";
-import {
-  Histogram,
-  snapshotFromCounts,
-  percentileFromCounts,
-  BUCKET_BOUNDARIES,
-  type HistogramSnapshot,
-} from "./histogram.js";
+import type { IngestRecord, LatencyBucketSnapshot } from "./types.js";
+import { Histogram, snapshotFromCounts, BUCKET_BOUNDARIES, type HistogramSnapshot } from "./histogram.js";
 
-const HOUR_MS = 3_600_000;
-const RETENTION_HOURS = 12;
-
-// How much of the IQR (p75-p25) above the median counts as "elevated" —
-// same 5x multiplier as the exact median+5*MAD threshold used elsewhere
-// (Phase 5/8), applied to a different (but comparably robust) spread
-// estimate. See the module comment below for why MAD itself isn't usable
-// here.
-const JITTER_IQR_MULTIPLIER = 5;
-
-export interface AttributionSplit {
-  tailCount: number;
-  jitterTailCount: number;
-  pipelineTailCount: number;
-}
+const BUCKET_MS = 10_000;
+const RETENTION_BUCKETS = 360;
 
 export interface RollingStats {
   rolling12h: HistogramSnapshot;
-  rolling12hSplit: AttributionSplit;
   currentSession: HistogramSnapshot;
+  latencyBuckets: LatencyBucketSnapshot[];
 }
 
-interface Bucket {
-  latency: Histogram;
-  jitter: Histogram;
-  tailCount: number;
-  jitterTailCount: number;
-}
-
-function newBucket(): Bucket {
-  return { latency: new Histogram(), jitter: new Histogram(), tailCount: 0, jitterTailCount: 0 };
-}
-
-function mergeHistograms(histograms: Histogram[]): { counts: Float64Array; total: number; maxNs: number } {
+// Exported for histogram.test.ts (Task #7): tests the actual merge logic
+// directly rather than a reimplementation, to rule out a merge-layer bug as
+// the cause of the p999Ns > maxNs investigation. No behavior change.
+export function mergeHistograms(histograms: Histogram[]): { counts: Float64Array; total: number; maxNs: number } {
   const counts = new Float64Array(BUCKET_BOUNDARIES.length);
   let total = 0;
   let maxNs = 0;
@@ -52,6 +25,23 @@ function mergeHistograms(histograms: Histogram[]): { counts: Float64Array; total
     if (h.maxValueNs > maxNs) maxNs = h.maxValueNs;
   }
   return { counts, total, maxNs };
+}
+
+interface LatencyBucket {
+  timestampMs: number;
+  total: Histogram;
+  parse: Histogram;
+  queue: Histogram;
+  book_update: Histogram;
+  publish: Histogram;
+}
+
+interface LatencyStats {
+  totalNs: number;
+  parseNs: number;
+  queueNs: number;
+  bookUpdateNs: number;
+  publishNs: number;
 }
 
 // Maintains a 12-hour rolling percentile view, separate from Broadcaster:
@@ -80,23 +70,13 @@ function mergeHistograms(histograms: Histogram[]): { counts: Float64Array; total
 // identically — eviction is a pass over whatever's retained, not a
 // step-by-step walk forward.
 //
-// Phase 9: host_jitter vs pipeline attribution split for the 12h window.
-// Unlike Phase 5/8's exact per-event attribution (which needs raw samples
-// and a real median+5*MAD threshold), this class only ever retains bucketed
-// histogram counts — no raw samples, by design, since 12 hours of raw
-// samples would be a lot of memory for a rolling display. So:
-//   - The tail/jitter threshold is derived FROM the bucket histograms
-//     themselves (median + 5*IQR instead of median + 5*MAD — MAD needs raw
-//     deviations, which aren't recoverable from bucket counts, while
-//     percentiles are exactly what this representation already supports).
-//   - Classification uses the MERGED 12h state (matching what's actually
-//     displayed), evaluated BEFORE recording the new sample, so a sample
-//     never influences the very threshold it's being classified against.
-//     This does mean recomputing the merge on every sample rather than
-//     once per broadcast tick — acceptable here since this is an ingest
-//     path in a Node relay, not the C++ trading hot path.
+// Used to also split the 12h tail into host-jitter vs pipeline attribution
+// (Phase 9), built entirely on host_jitter_ns. Removed along with that field
+// — this project measures its own hot-path work, not host scheduler noise —
+// and it was dead weight even before that: nothing in the web UI ever
+// rendered the split. See git history if it's ever needed again.
 export class RollingStatsAggregator {
-  private buckets = new Map<number, Bucket>();
+  private buckets = new Map<number, LatencyBucket>();
   private sessionHistogram = new Histogram();
 
   constructor(private readonly source: DataSource) {
@@ -110,76 +90,80 @@ export class RollingStatsAggregator {
 
   private handleRecord = (record: IngestRecord): void => {
     if (record.type !== "sample") return;
+    if (record.t_pop === undefined) return;
 
     const cpuGhz = this.source.cpuGhz();
     const latencyNs = (record.t_publish - record.t_recv) / cpuGhz;
+    const totalNs = (record.t_publish - record.t_recv) / cpuGhz;
+    const parseNs = (record.t_parse - record.t_recv) / cpuGhz;
+    const queueNs = (record.t_pop - record.t_parse) / cpuGhz;
+    const bookUpdateNs = (record.t_book - record.t_pop) / cpuGhz;
+    const publishNs = (record.t_publish - record.t_book) / cpuGhz;
     if (!Number.isFinite(latencyNs) || latencyNs < 0) return;
 
     this.sessionHistogram.record(latencyNs);
-    this.recordRolling(latencyNs, record.host_jitter_ns, Date.now());
+    this.recordRolling({
+      totalNs,
+      parseNs,
+      queueNs,
+      bookUpdateNs,
+      publishNs
+    }, Date.now());
   };
 
-  private recordRolling(latencyNs: number, hostJitterNs: number, atMs: number): void {
-    const bucketId = Math.floor(atMs / HOUR_MS);
+  private recordRolling(stats: LatencyStats, atMs: number): void {
+    const bucketId = Math.floor(atMs / BUCKET_MS);
     let bucket = this.buckets.get(bucketId);
     if (!bucket) {
-      bucket = newBucket();
+      bucket = {
+        timestampMs: bucketId * BUCKET_MS,
+        total: new Histogram(),
+        parse: new Histogram(),
+        queue: new Histogram(),
+        book_update: new Histogram(),
+        publish: new Histogram()
+      };
       this.buckets.set(bucketId, bucket);
       this.evictStale(bucketId);
     }
-
-    // Classify against the merged 12h state as it stood BEFORE this sample.
-    const buckets = [...this.buckets.values()];
-    const latencyMerge = mergeHistograms(buckets.map((b) => b.latency));
-    const isTail =
-      latencyMerge.total > 0 &&
-      latencyNs > percentileFromCounts(latencyMerge.counts, latencyMerge.total, 99.9);
-
-    if (isTail) {
-      bucket.tailCount++;
-      const jitterMerge = mergeHistograms(buckets.map((b) => b.jitter));
-      const median = percentileFromCounts(jitterMerge.counts, jitterMerge.total, 50);
-      const p25 = percentileFromCounts(jitterMerge.counts, jitterMerge.total, 25);
-      const p75 = percentileFromCounts(jitterMerge.counts, jitterMerge.total, 75);
-      const threshold = median + JITTER_IQR_MULTIPLIER * (p75 - p25);
-      if (jitterMerge.total > 0 && hostJitterNs > threshold) {
-        bucket.jitterTailCount++;
-      }
-    }
-
-    bucket.latency.record(latencyNs);
-    bucket.jitter.record(hostJitterNs);
+    bucket.total.record(stats.totalNs);
+    bucket.parse.record(stats.parseNs);
+    bucket.queue.record(stats.queueNs);
+    bucket.book_update.record(stats.bookUpdateNs);
+    bucket.publish.record(stats.publishNs);
   }
 
   private evictStale(currentBucketId: number): void {
     for (const id of this.buckets.keys()) {
-      if (currentBucketId - id >= RETENTION_HOURS) {
+      if (currentBucketId - id >= RETENTION_BUCKETS) {
         this.buckets.delete(id);
       }
     }
   }
 
   private rollingSnapshot(): HistogramSnapshot {
-    const buckets = [...this.buckets.values()];
-    const { counts, total, maxNs } = mergeHistograms(buckets.map((b) => b.latency));
+    const { counts, total, maxNs } = mergeHistograms([...this.buckets.values()].map((bucket) => bucket.total));
     return snapshotFromCounts(counts, total, maxNs);
   }
 
-  private rollingSplit(): AttributionSplit {
-    let tailCount = 0;
-    let jitterTailCount = 0;
-    for (const bucket of this.buckets.values()) {
-      tailCount += bucket.tailCount;
-      jitterTailCount += bucket.jitterTailCount;
-    }
-    return { tailCount, jitterTailCount, pipelineTailCount: tailCount - jitterTailCount };
+  private snapshotBucket(bucket: LatencyBucket): LatencyBucketSnapshot {
+    return {
+      timestampMs: bucket.timestampMs,
+      total: bucket.total.snapshot(),
+      parse: bucket.parse.snapshot(),
+      queue: bucket.queue.snapshot(),
+      bookUpdate: bucket.book_update.snapshot(),
+      publish: bucket.publish.snapshot()
+    };
   }
 
   snapshot(): RollingStats {
     return {
       rolling12h: this.rollingSnapshot(),
-      rolling12hSplit: this.rollingSplit(),
       currentSession: this.sessionHistogram.snapshot(),
+      latencyBuckets: [...this.buckets.values()]
+      .sort((a, b) => a.timestampMs - b.timestampMs)
+      .map((bucket) => this.snapshotBucket(bucket)),
     };
   }
 

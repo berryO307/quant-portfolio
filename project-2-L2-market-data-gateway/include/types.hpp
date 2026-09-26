@@ -55,6 +55,25 @@ struct Tick {
     // t2_tsc is captured after parsing but before queue push.
     uint64_t t1_tsc = 0;
     uint64_t t2_tsc = 0;
+
+    // One WebSocket frame can carry many ticks (Hyperliquid's "trades"
+    // channel is an array), and every tick in such a frame shares t1_tsc
+    // because they genuinely did arrive together. "parse" (t2_tsc - t1_tsc)
+    // is therefore the cumulative cost through this tick's position in the
+    // frame, not this tick's own marginal cost alone — a project decision,
+    // not an oversight: this used to be split into a separate "in-frame
+    // wait" stage (t_parse_begin_tsc marking where each tick's own parse
+    // began) plus a marginal "parse", removed as not worth the extra
+    // per-tick field once host-jitter-style diagnostic granularity stopped
+    // being a project goal. See git history if that split is ever needed
+    // again.
+    //
+    // Position of this tick within its frame. batch_size is the frame's
+    // tick count (1 for a frame that carries a single tick). Exported so
+    // consumers can tell "arrived in a burst of 177" from "arrived alone"
+    // instead of guessing from timestamp collisions.
+    uint16_t batch_index = 0;
+    uint16_t batch_size  = 1;
 };
 
 // REST snapshot 
