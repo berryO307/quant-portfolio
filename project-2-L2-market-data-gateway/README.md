@@ -176,7 +176,7 @@ Real exchanges pull both levers: shard the work, **and** buy the machine. A zero
 
 ---
 
-## Live Observability & Host-Noise Attribution
+## Live Observability
 
 Everything in this section is a deliberate design choice, not a caveat bolted on after the fact.
 
@@ -186,13 +186,9 @@ The original capture loop only produced a percentile table after the process exi
 
 That same geometric-bucket algorithm is ported three more times — once into the offline Python analysis (`analysis/export_summary.py`), once into the always-on relay's 12-hour rolling aggregator (`relay/src/histogram.ts`), and once into the web viewer's live tail detection (`web/src/lib/tailAttribution.ts`) — specifically so a percentile shown in the terminal during capture, in a downloaded summary afterward, and in the live web dashboard months later all agree with each other. Four implementations of the same small algorithm is a real cost; the alternative (four different approximations that quietly drift apart) is a worse one.
 
-### Distinguishing "our pipeline was slow" from "the host was noisy"
+### An earlier design choice that was later retired
 
-Under WSL2, `isolcpus`-style core isolation only reaches the guest's *virtual* CPUs — it cannot pin anything away from whatever the Windows host itself decides to schedule on the corresponding physical core. That is a real, structural limitation of running a latency-sensitive pipeline under WSL2, and it means some fraction of any observed tail latency is host noise this process has no way to prevent.
-
-The response to that limitation is not to hide it inside an unexplained tail, but to measure it directly. A dedicated jitter canary thread (`include/jitter_canary.hpp`) does nothing but target a fixed ~100µs interval in a loop, pinned to its own core, and record how far its actual wake time overshot the intended one. Because plain `sleep_for` at that resolution turned out to be a near-no-op on Windows (confirmed empirically, not assumed), the canary uses a hybrid sleep-then-spin approach to get a real, sub-millisecond-resolution reading rather than a number that never varies. That reading — `host_jitter_ns` — travels alongside every latency sample all the way to the web viewer.
-
-Every tail-latency event (a sample above the session's own p99.9) is then attributed to one of two buckets: **host_jitter**, if that sample's own jitter reading is a statistical outlier relative to the session's baseline (median + 5×MAD, or an IQR-based approximation where only bucketed histograms are available — see `relay/src/rollingStatsAggregator.ts`), or a **specific pipeline stage** (parse / book-update / publish), if not. The web viewer's `TailEventsFeed` and `StageBreakdown` panels render these two cases differently on purpose: a host_jitter attribution shows up muted/grey with the canary delta, not a stage comparison, because showing "book-update was the outlier" for an event actually caused by host preemption would be actively misleading. A colored, stage-attributed event is a bug (or at least a cost) inside this codebase; a grey, jitter-attributed event is the platform doing something outside this process's control. Telling those apart, per-event, rather than reporting one blended tail number, is the actual deliverable of this half of the system.
+An earlier revision of this pipeline also ran a dedicated jitter-canary thread (`include/jitter_canary.hpp`) measuring ambient host-scheduler noise (`host_jitter_ns`), and attributed every tail-latency event to either that noise or a specific pipeline stage. `project-2-v2.0.0` retired this entirely: the gateway now measures only its own hot-path work (parse → queue → book-update → publish), not host scheduler behavior. See git history/tags if host-noise attribution is ever needed again.
 
 ### The full observability stack
 
@@ -208,7 +204,7 @@ Web viewer (Next.js, deployed on Vercel)
      tail-event drill-down · loads historical summary.json files too
 ```
 
-The relay is intentionally the only piece that runs continuously — the gateway is a capture session, not a service, and the web viewer is stateless (it reconnects to the relay with the same backoff the gateway itself uses against Bybit). See [`relay/README.md`](relay/README.md) and [`web/README.md`](web/README.md) for how each piece is actually deployed.
+The relay is intentionally the only piece that runs continuously — the gateway is a capture session, not a service, and the web viewer is stateless (it reconnects to the relay with the same backoff the gateway itself uses against the exchange). See [`relay/README.md`](relay/README.md) and [`web/README.md`](web/README.md) for how each piece is actually deployed.
 
 ---
 
@@ -313,7 +309,15 @@ project-2-L2-market-data-gateway/
 
 This is a working portfolio system, not an internal tooling product. Live captures run on a low-cost VPS to accumulate proprietary tick data; the analysis layer feeds off those captures.
 
-**Shipped (v1.0.0):** per-stage rdtscp timestamps · cold-path export pipeline · live terminal progress view · jitter canary + host-noise attribution · offline Altair analysis · always-on relay with 12-hour rolling stats · web viewer (live L2 ladder, depth curve, trades tape) · latency panel with tail-event drill-down · Vercel + Oracle Cloud deployment.
+**Shipped:**
+
+- **v1.0.0** — per-stage rdtscp timestamps · cold-path export pipeline · live terminal progress view · jitter canary + host-noise attribution · offline Altair analysis · always-on relay with 12-hour rolling stats · web viewer (live L2 ladder, depth curve, trades tape) · latency panel with tail-event drill-down · Vercel + Oracle Cloud deployment.
+- **v1.1.0–v1.2.0** — depth-curve tween/marker fixes, uPlot instance-churn fix, a real light/dark/system theme toggle.
+- **v2.0.0** — Hyperliquid migration completed: real-time gateway→relay push (replacing capture-then-replay), coarse order-book tiers for wide price-bucket views, per-process core-triple pinning. Retired the jitter-canary/host-noise-attribution path — this gateway now measures only its own hot-path work. Breaking change to the sample-record wire format.
+- **v2.1.0** — redesigned site chrome: TopBar, collapsible Sidebar, dedicated `/orderbook` route.
+- **v2.2.0** — interactive System Architecture page (React Flow), visualizing the live pipeline.
+- **v2.3.0** — latency panel and its charts migrated from uPlot to ECharts.
+- **v2.4.0** — price-bucket aggregation for the order book ladder and depth curve, plus a bid/ask depth-split view.
 
 **Next up:**
 
