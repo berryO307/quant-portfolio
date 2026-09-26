@@ -5,14 +5,40 @@
 
 export type Side = "bid" | "ask" | "both" | "none";
 
+// The four t_* stamps are points on one timeline; a stage is the gap between
+// two adjacent ones. t_pop is optional only because session files captured
+// before the gateway emitted it replay through this same shape — a live
+// gateway always sends it.
+//
+// t_pop exists because a naive two-stamp difference measured the wrong
+// thing: t_recv..t_parse happens on the gateway thread while t_book..
+// t_publish happens on the consumer thread, so t_book - t_parse silently
+// spanned the queue and the consumer's wake-up — measured live, that
+// reported an 8.7ms "book update" for what is really a 20ns operation
+// behind a queue wait.
+//
+// Previously also carried t_parse_begin (a per-tick marginal parse cost
+// within a batched frame), host_jitter_ns (ambient host scheduler noise
+// from a dedicated canary thread) and queue_depth (SPSC queue size at pop)
+// — removed as a deliberate project-scope decision: this gateway measures
+// its own hot-path work (parse/queue/book/publish), not the host machine's
+// scheduler behavior. See git history if any of the three is ever needed
+// again.
 export interface SampleRecord {
   type: "sample";
   t_recv: number;
   t_parse: number;
+  t_pop?: number;
   t_book: number;
   t_publish: number;
-  queue_depth: number;
-  host_jitter_ns: number;
+  batch_index?: number;
+  batch_size?: number;
+  // Cumulative count of SpscRingBuffer pushes dropped because the ring was
+  // full, sampled alongside this tick (a running total, not a per-tick
+  // delta). Optional for the same reason as the other new fields above.
+  // Kept deliberately — data-completeness (did the order book miss a real
+  // tick), not a latency measurement.
+  queue_overflow_dropped?: number;
   side: Side;
   cpu_core: number;
 }
@@ -29,6 +55,27 @@ export interface SnapshotRecord {
   asks: [number, number][];
 }
 
+// Same shape as SnapshotRecord, sourced from a second, wider-rounded l2Book
+// subscription (Hyperliquid's own nSigFigs rounding, see nsigfigs below)
+// instead of the primary book -- see Channel::CoarseDepth in
+// include/market_data_source.hpp for why this exists. Fed to whichever
+// price-bucket tier pickBestSnapshot (lib/orderBook.ts) decides needs more
+// real range than the primary (finest-rounding) snapshot can cover --
+// reported live: BTC's $1000 bucket rendered a single bid and single ask
+// level. A SINGLE coarse tier could not serve every bucket size either:
+// bucketing a snapshot whose own native level spacing is already wider than
+// the requested display bucket is a no-op, so $5/$10/$100 buckets rendered
+// identically to $1000 with just one (nSigFigs=2) source. The gateway now
+// pushes one of these per tier (coarse_book_state.hpp's COARSE_TIERS);
+// nsigfigs is what tells a viewer's live map of them apart.
+export interface CoarseSnapshotRecord {
+  type: "coarse_snapshot";
+  nsigfigs: number;
+  tsc: number;
+  bids: [number, number][];
+  asks: [number, number][];
+}
+
 export interface TradeRecord {
   type: "trade";
   tsc: number;
@@ -36,6 +83,12 @@ export interface TradeRecord {
   qty: number;
   trade_id: number;
   side: Side;
+  // Exchange-provided trade time (Hyperliquid's wire "time" field, epoch
+  // milliseconds), NOT a gateway-local timestamp. Optional for the same
+  // reason as receivedAtMs's own note below -- a session captured before
+  // the gateway exported this falls back to receivedAtMs, which is what
+  // TradesTape.tsx does.
+  event_time_ms?: number;
 }
 
 export interface HistogramSnapshot {
@@ -44,23 +97,19 @@ export interface HistogramSnapshot {
   p50Ns: number;
   p99Ns: number;
   p999Ns: number;
+  counts: number[];
 }
 
-// Mirrors relay/src/rollingStatsAggregator.ts's AttributionSplit — an
-// IQR-based approximation of the exact median+5*MAD attribution used
-// elsewhere (Phase 5/8), since the relay only retains bucketed histogram
-// counts for its 12h window, not raw samples MAD needs.
-export interface AttributionSplit {
-  tailCount: number;
-  jitterTailCount: number;
-  pipelineTailCount: number;
-}
-
+// AttributionSplit/rolling12hSplit (an IQR-based host-jitter vs pipeline
+// attribution over the relay's 12h rolling window) used to live here too —
+// removed along with host_jitter_ns on the relay side (see
+// rollingStatsAggregator.ts), and it was dead weight even before that:
+// nothing in this app ever rendered the split.
 export interface StatsMessage {
   type: "stats";
   rolling12h: HistogramSnapshot;
-  rolling12hSplit: AttributionSplit;
   currentSession: HistogramSnapshot;
+  latencyBuckets?: LatencyBucketSnapshot[];
 }
 
 // Rebroadcast by the relay to every browser client whenever the upstream
@@ -74,12 +123,25 @@ export interface HelloMessage {
   cpu_ghz: number;
 }
 
-export type RelayMessage = SampleRecord | SnapshotRecord | TradeRecord | StatsMessage | HelloMessage;
+export type RelayMessage =
+  | SampleRecord
+  | SnapshotRecord
+  | CoarseSnapshotRecord
+  | TradeRecord
+  | StatsMessage
+  | HelloMessage;
 
 export function isRelayMessage(value: unknown): value is RelayMessage {
   if (typeof value !== "object" || value === null || !("type" in value)) return false;
   const t = (value as { type: unknown }).type;
-  return t === "sample" || t === "snapshot" || t === "trade" || t === "stats" || t === "hello";
+  return (
+    t === "sample" ||
+    t === "snapshot" ||
+    t === "coarse_snapshot" ||
+    t === "trade" ||
+    t === "stats" ||
+    t === "hello"
+  );
 }
 
 // Scale factors from the C++ side (types.hpp: PRICE_SCALE, QTY_SCALE) —
@@ -104,6 +166,12 @@ export function toQty(scaled: number): number {
 // for a live tape (not a precise historical record) that's an acceptable
 // stand-in — off by network + relay queueing delay, not by session drift.
 export interface TimedTrade extends TradeRecord {
+  // Browser wall-clock at WS message arrival -- includes exchange-to-relay
+  // network time, gateway processing, relay-to-browser network time, and
+  // client-side render batching. NOT when the trade happened on the
+  // exchange; kept as a fallback display value for pre-existing session
+  // files that predate event_time_ms, and as a latency-diagnostic value in
+  // its own right, but TradesTape.tsx displays event_time_ms when present.
   receivedAtMs: number;
 }
 
@@ -116,24 +184,78 @@ export interface TimedTrade extends TradeRecord {
 export interface LiveSample {
   tRecvTsc: number;
   latencyNs: number;
+  // t_recv -> t_parse. For tick k of a multi-tick frame (every tick in the
+  // frame shares t_recv) this is cumulative through this tick's position in
+  // the frame, not this tick's own marginal parse cost alone — a deliberate
+  // project-scope simplification (there used to be a separate "in-frame
+  // wait" stage isolating the marginal cost; removed as not worth the extra
+  // per-tick field for what this project is measuring).
   parseNs: number;
+  queueNs: number; // gateway thread -> consumer thread handoff
   bookUpdateNs: number;
   publishNs: number;
-  hostJitterNs: number;
+  // Position within the frame this tick arrived in. Ticks of one frame
+  // genuinely share tRecvTsc, so these are what tells them apart — for
+  // plotting them at distinct x positions, and for keying a tail event to
+  // one specific tick rather than to every tick of its frame.
+  batchIndex: number;
+  batchSize: number;
+  // Cumulative, not per-tick — the newest sample's value is the current
+  // session total. See SampleRecord's field for what it counts.
+  queueOverflowDropped: number;
 }
 
-export type Attribution = "host_jitter" | "parse" | "book-update" | "publish";
+export type Attribution = "parse" | "queue" | "book-update" | "publish";
 
 // Canonical shape both a loaded historical summary.json's tail_events and
 // client-side live tail detection produce, so TailEventsFeed/StageBreakdown
 // don't need to know which source they're rendering.
+// The four stages tile t_recv -> t_publish exactly: every nanosecond of a
+// sample's latencyNs belongs to exactly one of them. Keep it that way — a
+// stage set that does not sum to the total makes the breakdown unreadable
+// against the chart above it.
+export interface StageNs {
+  parse: number;
+  queue: number;
+  bookUpdate: number;
+  publish: number;
+}
+
 export interface TailEvent {
+  // Unique per tick, not per frame: a frame carrying many ticks produces
+  // many samples sharing tRecvTsc, so batchIndex has to be part of this or
+  // several tail events collide on one key.
   key: string;
   tRecvTsc: number;
+  batchIndex: number;
+  // Ticks of one frame share tRecvTsc exactly (see the key comment above)
+  // and, when the whole frame was delayed by the same upstream stall, can
+  // also land on a near-identical latencyNs — close enough that both round
+  // to the same displayed value. Two such siblings then render as two
+  // textually-identical rows in TailEventsFeed, which reads as a duplicate
+  // bug even though they're genuinely distinct ticks. batchSize lets the
+  // feed show which batch position each one is, so that case reads as
+  // "two siblings from the same burst" instead of looking like the same
+  // thing shown twice.
+  batchSize: number;
   latencyNs: number;
-  hostJitterNs: number;
   attribution: Attribution;
-  stageNs: { parse: number; bookUpdate: number; publish: number };
+  stageNs: StageNs;
+}
+
+// Identity of a single tick. Used wherever a sample has to be matched back
+// to its tail event — tRecvTsc alone is ambiguous within a frame.
+export function sampleKey(tRecvTsc: number, batchIndex: number): string {
+  return `live-${tRecvTsc}-${batchIndex}`;
+}
+
+export interface LatencyBucketSnapshot {
+    timestampMs: number;
+    total: HistogramSnapshot;
+    parse: HistogramSnapshot;
+    queue: HistogramSnapshot;
+    bookUpdate: HistogramSnapshot;
+    publish: HistogramSnapshot;
 }
 
 // Mirrors analysis/export_summary.py's summary.json exactly (snake_case,
@@ -146,15 +268,30 @@ export interface HistoricalSummary {
     n_samples: number;
     duration_s_approx: number;
   };
-  percentiles_ns: { count: number; p50_ns: number; p99_ns: number; p999_ns: number; max_ns: number };
-  stage_medians_ns: { parse: number; book_update: number; publish: number };
-  host_jitter: { baseline_ns: number; elevated_threshold_ns: number };
+  percentiles_ns: { 
+    count: number; 
+    p50_ns: number; 
+    p99_ns: number; 
+    p999_ns: number; 
+    max_ns: number;
+  };
+  stage_medians_ns: {
+    parse: number;
+    queue: number;
+    book_update: number;
+    publish: number;
+  };
   tail_events: {
     index: number;
     t_recv_tsc: number;
     latency_ns: number;
-    host_jitter_ns: number;
     attribution: Attribution;
-    stage_ns: { parse: number; book_update: number; publish: number };
-  }[];
+    stage_ns: {
+      parse: number;
+      queue: number;
+      book_update: number;
+      publish: number;
+    }
+  };
+  latency_buckets: LatencyBucketSnapshot[];
 }
