@@ -37,14 +37,89 @@
      always-dark appearance); light-mode values are new, chosen for
      legibility on a white background rather than derived from anything. */
   --panel: #f1f5f9;
+  /* Architecture page's "constants zone" (band 03) cards — must visibly
+     recede versus the flow-zone cards above (spec: "card-flat ... visibly
+     recedes"). The spec gives dark-mode hex literals only; this derives a
+     light-mode equivalent the same way rather than inventing an unrelated
+     value — a card that sits BETWEEN --border and --background, same
+     relationship the dark tokens have to their own --panel/--border. */
+  --panel-flat: color-mix(in srgb, var(--panel) 55%, var(--background) 45%);
+  --border-flat: color-mix(in srgb, var(--border) 70%, var(--background) 30%);
+  /* Architecture pipeline cards' in/out contract strip — own background,
+     pinned to the card's bottom edge (spec § "The in/out contract strip").
+     Same derivation as --panel-flat above: a shade between panel and
+     background, distinct from both. */
+  --strip-bg: color-mix(in srgb, var(--panel) 75%, var(--background) 25%);
   --grid: #e2e8f0;
   --chart-text: #334155;
+  /* Same new token names the .dark block defines for the redesigned chrome,
+     given light-theme values here so they resolve in both themes. */
+  --dim: #7c869b;
+  /* Architecture page's React Flow background dots. A color-mix() against
+     --foreground looked right in dark mode but went invisible here — mix
+     percentages don't carry a guaranteed contrast ratio, they just
+     describe a blend, and this theme's light --foreground happens to sit
+     close enough to --background at low mix percentages to wash out. A
+     dedicated, explicitly-tuned-per-theme value doesn't have that failure
+     mode: whoever changes the theme's background/foreground later has to
+     touch this value directly rather than relying on an assumption about
+     how those two tokens relate, so it can't silently break again the next
+     time the theme changes. */
+  --rf-grid-dot: #64748b;
+  /* Architecture page's COLD PATH frame/badge/text — one colour, reused at
+     different opacities for border/fill/text, exactly like HOT PATH reuses
+     a single red (COLOR.hot) the same way. First pass here used a fixed
+     grey shared by both themes (barely-there on white, same mistake
+     --rf-grid-dot's own comment above describes) and then, even after
+     going per-theme, a slate that was still too DESATURATED to read as
+     anything but faint at low opacity — grey has no saturation left to
+     fall back on the way HOT PATH's red does. A real saturated blue
+     (matching this app's own --heat-cool token, its existing "cool" colour
+     for exactly this kind of thing) reads clearly at the same opacities
+     HOT PATH uses, in both themes. */
+  --cold-path-text: #0284c7;
+  --brand-blue: #2563eb;
+  --brand-teal: #0d9488;
+  --brand-purple: #7c3aed;
+  --brand-pink: #db2777;
+  --brand-amber: #b45309;
+  --brand-red: #dc2626;
+  --brand-green: #16a34a;
   --bid: #16a34a;
   --ask: #dc2626;
   --parse: #2563eb;
+  --queue: #0d9488;
   --book-update: #7c3aed;
-  --jitter: #a16207;
+  /* Task #8 fix: the Publish stage previously reused chartTheme.palette[3]
+     (this file's --chart-4, below) for its ECharts line/heatmap colour.
+     --chart-N are oklch() — fine for plain CSS (StageBreakdown's div-based
+     bars use them via color-mix() successfully), but resolveVar()'s
+     browser round-trip can hand oklch(...) back VERBATIM on engines that
+     preserve wide-gamut colour functions in computed style, which
+     withAlpha()'s rgb()/rgba()-only regex can't parse, and which zrender's
+     own colour parser doesn't understand at all — it silently falls back
+     to black. Exact same failure mode as the heatmap-turned-black
+     regression from --muted-foreground earlier in this project. Fix: a
+     dedicated hex-backed token, same pattern as parse/queue/book-update
+     above, so Publish is safe through both resolveVar() and withAlpha().
+     Indigo — distinct from parse (blue), queue (teal), book-update
+     (violet) — chosen to sit in the same family as --chart-4's own hue. */
+  --publish: #6366f1;
   --severe: #854d0e;
+  /* Thermal ramp for the latency distribution chart (Latency Tails —
+     LatencyPanel.tsx): heatmap density + the four percentile lines all
+     read off this same cool -> warm -> hot -> critical progression, instead
+     of a single-hue opacity wash. --heat-crit deliberately reuses --ask's
+     own value rather than inventing a fifth red — "critical" and "ask/
+     danger" are already the same idea everywhere else in this app. The
+     other three fill a real gap: nothing in the existing palette was a
+     true vivid warm color (the closest, --severe, is a muted amber-brown
+     chosen specifically to NOT compete with --ask, the opposite of what a
+     chart that wants attention needs). */
+  --heat-cool: #0ea5e9;
+  --heat-warm: #f59e0b;
+  --heat-hot: #f97316;
+  --heat-crit: #dc2626;
   --error-bg: #fef2f2;
   --chart-1: oklch(0.5460 0.2153 262.8719);
   --chart-2: oklch(0.7211 0.1415 253.1015);
@@ -59,10 +134,10 @@
   --sidebar-accent-foreground: oklch(0.5460 0.2153 262.8719);
   --sidebar-border: oklch(0.9290 0.0126 255.5317);
   --sidebar-ring: oklch(0.5460 0.2153 262.8719);
-  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-sans: var(--font-plex-sans), var(--font-inter), system-ui, sans-serif;
   --font-serif: Georgia, serif;
-  --font-mono: var(--font-jetbrains-mono), monospace;
-  --radius: 0.375rem;
+  --font-mono: var(--font-plex-mono), var(--font-jetbrains-mono), monospace;
+  --radius: 0.625rem;
   --shadow-x: 0px;
   --shadow-y: 4px;
   --shadow-blur: 10px;
@@ -82,55 +157,97 @@
 }
 
 .dark {
-  --background: oklch(0.1371 0.0360 258.5258);
-  --foreground: oklch(0.9838 0.0035 247.8583);
-  --card: oklch(0.1371 0.0360 258.5258);
-  --card-foreground: oklch(0.9838 0.0035 247.8583);
-  --popover: oklch(0.1371 0.0360 258.5258);
-  --popover-foreground: oklch(0.9838 0.0035 247.8583);
+  /* Redesign palette (TopBar/Sidebar/Architecture chrome). Overriding the
+     dark theme's tokens here — rather than restyling each panel — is what
+     makes the existing dashboard panels pick up the new look without any
+     component's render changing. Light theme (:root above) is untouched. */
+  --background: #080b11;
+  --foreground: #e4e8f0;
+  --card: #0e1420;
+  --card-foreground: #e4e8f0;
+  --popover: #0e1420;
+  --popover-foreground: #e4e8f0;
   --primary: oklch(0.6232 0.1879 259.7964);
   --primary-foreground: oklch(0.2079 0.0399 265.7275);
   --secondary: oklch(0.2800 0.0369 259.9740);
   --secondary-foreground: oklch(0.9838 0.0035 247.8583);
-  --muted: oklch(0.2800 0.0369 259.9740);
-  --muted-foreground: oklch(0.7107 0.0351 256.7877);
-  --accent: oklch(0.2800 0.0369 259.9740);
-  --accent-foreground: oklch(0.9838 0.0035 247.8583);
+  --muted: #151c2a;
+  --muted-foreground: #8b93a7;
+  --accent: #151c2a;
+  --accent-foreground: #e4e8f0;
   --destructive: oklch(0.3959 0.1331 25.7205);
-  --destructive-foreground: oklch(0.9838 0.0035 247.8583);
-  --border: oklch(0.2800 0.0369 259.9740);
-  --input: oklch(0.2800 0.0369 259.9740);
-  --ring: oklch(0.4878 0.2170 264.3876);
+  --destructive-foreground: #e4e8f0;
+  --border: #1b2230;
+  --input: #1b2230;
+  --ring: #5b9bf7;
+  /* Third text tier below --muted-foreground, for de-emphasized captions
+     in the new chrome. */
+  --dim: #5b6577;
+  /* Architecture page's React Flow background dots — see the :root
+     definition of this same token for why it's a fixed, explicitly-tuned
+     value per theme rather than a color-mix() against --foreground. */
+  --rf-grid-dot: #475569;
+  /* Architecture page's COLD PATH frame/badge — see the :root definition
+     of this token for the full reasoning. Matches this theme's own
+     --heat-cool value exactly, so "cold" reads as the same colour
+     everywhere this app already uses it, not a one-off. */
+  --cold-path-text: #38bdf8;
+  /* Brand accents shared by the top bar wordmark, sidebar and the
+     architecture diagram's connectors/stage colours. */
+  --brand-blue: #5b9bf7;
+  --brand-teal: #2dd4bf;
+  --brand-purple: #a78bfa;
+  --brand-pink: #f472b6;
+  --brand-amber: #f0a83d;
+  --brand-red: #f0546b;
+  --brand-green: #2fcf74;
   /* Matches lib/theme.ts's COLOR_PANEL_BG/COLOR_GRID/COLOR_TEXT/COLOR_BID/
      COLOR_ASK/COLOR_PARSE/COLOR_BOOK_UPDATE/COLOR_JITTER/COLOR_SEVERE/
      COLOR_ERROR_BG exactly — see :root's comment above. */
-  --panel: #0a1424;
+  --panel: #0e1420;
+  /* Spec-literal values (design tokens: card-flat #0a0e16, border-flat
+     #171e2b) — see :root's own comment on this pair for why dark uses the
+     exact spec hex while light derives one. */
+  --panel-flat: #0a0e16;
+  --border-flat: #171e2b;
+  --strip-bg: #0b111c;
   --grid: #111b2a;
   --chart-text: #cbd5e1;
   --bid: #3fb950;
   --ask: #f85149;
   --parse: #58a6ff;
+  --queue: #2dd4bf;
   --book-update: #bc8cff;
-  --jitter: #9c7f43;
+  /* Same reasoning as the light theme's own --publish comment above. */
+  --publish: #818cf8;
   --severe: #b19655;
+  /* Same thermal ramp as the light theme's own block — brighter stops,
+     same "reuse --ask for critical" reasoning. See that block's comment
+     for the full rationale. */
+  --heat-cool: #38bdf8;
+  --heat-warm: #fbbf24;
+  --heat-hot: #fb923c;
+  --heat-crit: #f85149;
   --error-bg: #3a1418;
   --chart-1: oklch(0.4878 0.2170 264.3876);
   --chart-2: oklch(0.5449 0.2154 262.7414);
   --chart-3: oklch(0.6776 0.1481 238.1044);
   --chart-4: oklch(0.3752 0.0394 256.8467);
   --chart-5: oklch(0.4691 0.1926 264.5776);
-  --sidebar: oklch(0.1371 0.0360 258.5258);
-  --sidebar-foreground: oklch(0.9838 0.0035 247.8583);
-  --sidebar-primary: oklch(0.6232 0.1879 259.7964);
-  --sidebar-primary-foreground: oklch(0.1371 0.0360 258.5258);
-  --sidebar-accent: oklch(0.2800 0.0369 259.9740);
-  --sidebar-accent-foreground: oklch(0.9838 0.0035 247.8583);
-  --sidebar-border: oklch(0.2800 0.0369 259.9740);
-  --sidebar-ring: oklch(0.4878 0.2170 264.3876);
-  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --sidebar: #0e1420;
+  --sidebar-foreground: #e4e8f0;
+  --sidebar-primary: #5b9bf7;
+  --sidebar-primary-foreground: #080b11;
+  --sidebar-accent: #151c2a;
+  --sidebar-accent-foreground: #e4e8f0;
+  --sidebar-border: #1b2230;
+  --sidebar-ring: #5b9bf7;
+  /* IBM Plex added in app/layout.tsx (Inter/JetBrains Mono were what this
+     app loaded before, kept as the fallback rather than removed). */
+  --font-sans: var(--font-plex-sans), var(--font-inter), system-ui, sans-serif;
   --font-serif: Georgia, serif;
-  --font-mono: var(--font-jetbrains-mono), monospace;
-  --radius: 0.375rem;
+  --font-mono: var(--font-plex-mono), var(--font-jetbrains-mono), monospace;
+  --radius: 0.625rem;
   --shadow-x: 0px;
   --shadow-y: 8px;
   --shadow-blur: 15px;
@@ -182,15 +299,32 @@
   --color-sidebar-ring: var(--sidebar-ring);
 
   --color-panel: var(--panel);
+  --color-panel-flat: var(--panel-flat);
+  --color-border-flat: var(--border-flat);
+  --color-strip-bg: var(--strip-bg);
   --color-grid: var(--grid);
   --color-chart-text: var(--chart-text);
   --color-bid: var(--bid);
   --color-ask: var(--ask);
   --color-parse: var(--parse);
+  --color-queue: var(--queue);
   --color-book-update: var(--book-update);
-  --color-jitter: var(--jitter);
+  --color-publish: var(--publish);
   --color-severe: var(--severe);
+  --color-heat-cool: var(--heat-cool);
+  --color-heat-warm: var(--heat-warm);
+  --color-heat-hot: var(--heat-hot);
+  --color-heat-crit: var(--heat-crit);
   --color-error-bg: var(--error-bg);
+
+  --color-dim: var(--dim);
+  --color-brand-blue: var(--brand-blue);
+  --color-brand-teal: var(--brand-teal);
+  --color-brand-purple: var(--brand-purple);
+  --color-brand-pink: var(--brand-pink);
+  --color-brand-amber: var(--brand-amber);
+  --color-brand-red: var(--brand-red);
+  --color-brand-green: var(--brand-green);
 
   --font-sans: var(--font-sans);
   --font-mono: var(--font-mono);
@@ -228,17 +362,368 @@
   }
 }
 
-/* uPlot's built-in legend is a <table> that doesn't respect a flex parent's
-   height/width on its own — left unconstrained it overflows its container
-   instead of wrapping (Phase 8.5 bug report). Force it to wrap and shrink
-   inside whatever box the chart lives in, everywhere in the app. */
-.u-legend {
-  display: flex !important;
-  flex-wrap: wrap !important;
-  max-width: 100%;
-  font-size: 10px;
-  line-height: 1.4;
+/* (The .u-legend overrides that used to live here were uPlot's; the charts
+   are ECharts now, whose tooltip/legend styling comes from the option
+   object in lib/chartTheme.ts rather than from global CSS.) */
+
+/* Order-book row flash on a trade match — matches Hyperliquid's own ladder,
+   which briefly highlights the row a trade just printed against. Two
+   variants (not one) since a bid-side match and an ask-side match should
+   read as clearly different events, same as the rest of this app's
+   bid=green/ask=red convention. See OrderBookLadder's useTradeFlash. */
+@keyframes flash-bid {
+  0% { background-color: color-mix(in srgb, var(--bid) 45%, transparent); }
+  100% { background-color: transparent; }
 }
-.u-legend .u-series {
-  white-space: nowrap;
+@keyframes flash-ask {
+  0% { background-color: color-mix(in srgb, var(--ask) 45%, transparent); }
+  100% { background-color: transparent; }
+}
+.flash-bid {
+  animation: flash-bid 450ms ease-out;
+}
+.flash-ask {
+  animation: flash-ask 450ms ease-out;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Redesign chrome: top bar, sidebar, architecture diagram.
+   Pure CSS/SVG — no animation library.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* TopBar wordmark: blue → teal → purple → blue, clipped to the text. */
+@keyframes tf-wordmark {
+  0%   { background-position:   0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.tf-wordmark {
+  background-image: linear-gradient(
+    90deg,
+    var(--brand-blue),
+    var(--brand-teal),
+    var(--brand-purple),
+    var(--brand-blue)
+  );
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: tf-wordmark 6s linear infinite;
+}
+
+/* MICROTAPE wordmark (Microtape.tsx): cipher-resolve decrypt text. Dedicated
+   dark-amber tokens (not --brand-amber — that one's light/dark values don't
+   match the exact hex this spec calls for), same hex in both themes; only
+   glow strength differs per theme here (softer in light mode so it doesn't
+   wash out on a light panel — the animation timing itself lives in the
+   component and never changes with theme). */
+:root {
+  --microtape-word: #d99a45;
+  --microtape-dollar: #c98a3a;
+}
+.tf-microtape-resolved {
+  color: var(--microtape-word);
+  text-shadow:
+    0 0 5px color-mix(in srgb, var(--microtape-word) 45%, transparent),
+    0 0 13px color-mix(in srgb, var(--microtape-word) 18%, transparent);
+}
+.dark .tf-microtape-resolved {
+  text-shadow:
+    0 0 5px color-mix(in srgb, var(--microtape-word) 55%, transparent),
+    0 0 13px color-mix(in srgb, var(--microtape-word) 25%, transparent);
+}
+.tf-microtape-dollar {
+  color: var(--microtape-dollar);
+  text-shadow:
+    0 0 5px color-mix(in srgb, var(--microtape-dollar) 45%, transparent),
+    0 0 13px color-mix(in srgb, var(--microtape-dollar) 18%, transparent);
+}
+.dark .tf-microtape-dollar {
+  text-shadow:
+    0 0 5px color-mix(in srgb, var(--microtape-dollar) 55%, transparent),
+    0 0 13px color-mix(in srgb, var(--microtape-dollar) 25%, transparent);
+}
+.tf-microtape-scramble {
+  color: var(--dim);
+}
+.tf-microtape-cursor {
+  background-color: var(--microtape-word);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--microtape-word) 30%, transparent);
+}
+.dark .tf-microtape-cursor {
+  box-shadow: 0 0 8px color-mix(in srgb, var(--microtape-word) 40%, transparent);
+}
+
+/* Sidebar "Built by" line: a single-color sheen sweeping across the text —
+   base color is var(--foreground), so it reads correctly in both themes,
+   with one accent (brand-blue) passing through as the highlight. Not
+   tf-wordmark's multi-hue gradient loop, which read as too loud for a
+   caption-style credit line. */
+@keyframes tf-shimmer-sweep {
+  0%   { background-position: 160% 0; }
+  100% { background-position: -60% 0; }
+}
+.tf-shimmer {
+  background-image: linear-gradient(
+    100deg,
+    var(--foreground) 42%,
+    var(--brand-blue) 50%,
+    var(--foreground) 58%
+  );
+  background-size: 260% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: tf-shimmer-sweep 3.2s ease-in-out infinite;
+}
+
+/* Sidebar identity avatar: pops in, then settles into a small idle wiggle
+   — restarts from a fresh pop each time the codename changes because
+   Sidebar.tsx keys the element by codename, remounting it. */
+@keyframes tf-emoji-pop {
+  0%   { transform: scale(0.4) rotate(-18deg); opacity: 0; }
+  55%  { transform: scale(1.18) rotate(10deg); opacity: 1; }
+  75%  { transform: scale(0.94) rotate(-5deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+@keyframes tf-emoji-idle {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  25%      { transform: translateY(-1.5px) rotate(-3deg); }
+  75%      { transform: translateY(1px) rotate(3deg); }
+}
+.tf-emoji-avatar {
+  animation:
+    tf-emoji-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both,
+    tf-emoji-idle 3.2s ease-in-out 0.5s infinite;
+}
+
+/* "live" dot — opacity + scale pulse. */
+@keyframes tf-live-pulse {
+  0%, 100% { opacity: 1;    transform: scale(1); }
+  50%      { opacity: 0.35; transform: scale(0.72); }
+}
+.tf-live-dot {
+  animation: tf-live-pulse 1.8s ease-in-out infinite;
+}
+
+/* React Flow's <Controls /> (architecture page): the library exposes these
+   as real CSS custom properties specifically so a host app can theme them
+   without !important — every button style resolves as
+   var(--xy-controls-button-*, var(--xy-controls-button-*-default)), so
+   setting the non-"-default" variable here simply wins, no specificity
+   fight. Pointed at this app's own tokens (not React Flow's own built-in
+   dark palette) so it matches the rest of the UI exactly, and both light
+   and dark "just work" the same way every other themed thing in this file
+   does — --panel/--border/--muted/--muted-foreground/--foreground already
+   have separate :root and .dark values, so nothing dark-mode-specific
+   needs to be written here at all. */
+.react-flow {
+  --xy-controls-button-background-color: var(--panel);
+  --xy-controls-button-background-color-hover: var(--muted);
+  --xy-controls-button-color: var(--muted-foreground);
+  --xy-controls-button-color-hover: var(--foreground);
+  --xy-controls-button-border-color: var(--border);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Architecture page (ARCHITECTURE_SPEC.md) — edge comets, stage-icon radar
+   ping, latency-timeline bar fill / travelling chips, stamp halos.
+   ──────────────────────────────────────────────────────────────────────── */
+
+/* Edge comet — the moving "pulse" layer of a link (spec § "The comet
+   animation"). Deliberately NOT SVG `pathLength` normalisation (that
+   rewrites the path's coordinate system and silently distorts the dash) —
+   a plain pixel dasharray instead, but sized PER EDGE from that edge's own
+   measured length (edges.tsx, via getTotalLength()) rather than one fixed
+   guess shared by every link. A single fixed period badly mismatched this
+   page's actual mix of very short (pipeline row) and very long (the arced
+   health-check and vertical disk links) paths — see edges.tsx's own
+   comment for the specific failure modes that produced. --tf-comet-period
+   is set inline per edge to exactly -(that edge's measured length), so one
+   full animation cycle is exactly one lap of that specific path: the
+   pattern is bitwise identical at 0% and 100%, so the loop never visibly
+   jumps, and because dasharray's "on" segment is always 1/3 of the same
+   length the gap is drawn against, exactly one comet is ever visible,
+   regardless of how short or long the link is. Negative dashoffset =
+   forward travel, so each edge's `d` must be drawn starting at the node
+   data actually flows FROM (see edges.tsx). */
+@keyframes tf-comet {
+  from { stroke-dashoffset: 0; }
+  to   { stroke-dashoffset: var(--tf-comet-period, 0px); }
+}
+.tf-comet {
+  animation: tf-comet var(--tf-comet-dur, 1.25s) linear infinite;
+  animation-delay: var(--tf-comet-delay, 0s);
+}
+
+/* Edge arrowheads — breathing opacity so the arrow at an edge's end doesn't
+   sit dead-static next to its own travelling comet. --tf-arrow-dur is set
+   per marker colour (edges.tsx) to match that colour's shared comet speed,
+   not phase-locked to any one edge's comet (several edges of the same
+   colour share one <marker>, at different delays, so exact sync isn't
+   possible) — just alive at the same tempo instead of static. */
+@keyframes tf-arrow-pulse {
+  0%, 100% { fill-opacity: 0.4; }
+  50%      { fill-opacity: 0.95; }
+}
+.tf-arrow-pulse {
+  animation: tf-arrow-pulse var(--tf-arrow-dur, 1.5s) ease-in-out infinite;
+}
+
+/* Stage icon badge: static glow + a radar ping that expands from the glyph
+   to the badge edge and fades (spec § "Stage icons — glow + radar ping").
+   `color` (set inline per stage) drives the ping ring's `currentColor`
+   border; `--tf-icon-delay` staggers each stage so the ping ripples along
+   the pipeline rather than firing in lockstep. */
+@keyframes tf-ping {
+  0%   { transform: scale(0.55); opacity: 0.6; }
+  100% { transform: scale(1);    opacity: 0; }
+}
+.tf-stage-icon {
+  position: relative;
+}
+.tf-stage-icon::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid currentColor;
+  /* Base state matches the animation's own 0% keyframe (scale(0.55),
+     opacity 0.6) — same reasoning as .tf-stamp-halo above: during a
+     staggered icon's animation-delay window (up to 1.4s for the last
+     stage), an element shows the browser's plain default for opacity
+     (1) and transform (none, i.e. scale(1)) if neither is set outside
+     the animation, which for a ring meant to start small-and-faded read
+     as a solid full-size ring sitting static for over a second on first
+     paint, before the stagger the delay exists to produce had actually
+     started. fill-mode: backwards makes this the animation's own stated
+     starting point rather than a coincidentally-matching base rule. */
+  transform: scale(0.55);
+  opacity: 0.6;
+  animation: tf-ping 2.8s ease-out infinite;
+  animation-delay: var(--tf-icon-delay, 0s);
+  animation-fill-mode: backwards;
+}
+
+/* Latency timeline (band 02) — bars fill in sequence and HOLD (must not
+   drain one by one); all four snap back together in the loop's last 0.5%
+   so the reset reads as a clean restart. 11s loop, each phase 25%. */
+@keyframes tf-fill-1 { 0% { width: 0; } 25%, 99.5% { width: 100%; } 100% { width: 0; } }
+@keyframes tf-fill-2 { 0%, 25% { width: 0; } 50%, 99.5% { width: 100%; } 100% { width: 0; } }
+@keyframes tf-fill-3 { 0%, 50% { width: 0; } 75%, 99.5% { width: 100%; } 100% { width: 0; } }
+@keyframes tf-fill-4 { 0%, 75% { width: 0; } 99%, 99.5% { width: 100%; } 100% { width: 0; } }
+.tf-bar { width: 100%; } /* static/reduced-motion fallback: full, per spec */
+.tf-bar-1 { animation: tf-fill-1 11s linear infinite; }
+.tf-bar-2 { animation: tf-fill-2 11s linear infinite; }
+.tf-bar-3 { animation: tf-fill-3 11s linear infinite; }
+.tf-bar-4 { animation: tf-fill-4 11s linear infinite; }
+
+/* Travelling sample chip — four chips, one per phase, each visible only
+   during its own quarter and travelling only across its own segment (the
+   hand-off IS the point: the sample changes identity as it moves). Base
+   state is invisible; each phase-N animation reveals + slides it, then
+   hides it again before the next chip takes over. --seg (px) is the
+   segment width, set inline per chip. */
+.tf-chip { opacity: 0; }
+@keyframes tf-chip-1 {
+  0%          { opacity: 1; transform: translateX(0); }
+  25%         { opacity: 1; transform: translateX(var(--seg)); }
+  25.01%, 100% { opacity: 0; transform: translateX(var(--seg)); }
+}
+@keyframes tf-chip-2 {
+  0%, 25%      { opacity: 0; transform: translateX(0); }
+  25.01%       { opacity: 1; transform: translateX(0); }
+  50%          { opacity: 1; transform: translateX(var(--seg)); }
+  50.01%, 100% { opacity: 0; transform: translateX(var(--seg)); }
+}
+@keyframes tf-chip-3 {
+  0%, 50%      { opacity: 0; transform: translateX(0); }
+  50.01%       { opacity: 1; transform: translateX(0); }
+  75%          { opacity: 1; transform: translateX(var(--seg)); }
+  75.01%, 100% { opacity: 0; transform: translateX(var(--seg)); }
+}
+@keyframes tf-chip-4 {
+  0%, 75%      { opacity: 0; transform: translateX(0); }
+  75.01%       { opacity: 1; transform: translateX(0); }
+  99%          { opacity: 1; transform: translateX(var(--seg)); }
+  99.01%, 100% { opacity: 0; transform: translateX(var(--seg)); }
+}
+.tf-chip-1 { animation: tf-chip-1 11s linear infinite; }
+.tf-chip-2 { animation: tf-chip-2 11s linear infinite; }
+.tf-chip-3 { animation: tf-chip-3 11s linear infinite; }
+.tf-chip-4 { animation: tf-chip-4 11s linear infinite; }
+
+/* Stamp halos — each stamp ring flashes as the sample reaches it: expand
+   ~7px -> 17px and fade over ~0.6s, at 0/25/50/75/99% of the SAME 11s loop
+   the bars/chips run on. One shared keyframe (a single flash near the start
+   of its own cycle); five instances of the SAME 11s animation, offset via
+   --tf-halo-delay (0s/2.75s/5.5s/8.25s/10.89s — one per stamp) land each
+   flash at the right instant without five separate keyframe blocks. */
+@keyframes tf-stamp-halo {
+  0%   { transform: scale(0.45); opacity: 0; }
+  4%   { transform: scale(0.45); opacity: 0.85; }
+  9%   { transform: scale(1.55); opacity: 0; }
+  100% { transform: scale(1.55); opacity: 0; }
+}
+.tf-stamp-halo {
+  /* opacity: 0 base, outside the animation — without this, an element
+     whose animation-delay hasn't elapsed yet shows the browser's plain
+     (non-animated) default for any property the animation touches, which
+     for opacity is 1 (fully visible). Four of the five halos here have a
+     nonzero delay (2.75s/5.5s/8.25s/10.89s), so without this base value
+     each one sat fully opaque and CONSTANTLY visible for its entire delay
+     window every time the page loaded — the opposite of "flash once as
+     the sample reaches it". animation-fill-mode: backwards makes the same
+     fix explicit/correct rather than relying on the base rule "winning" by
+     cascade order, and covers the frame timing gap after the delay elapses
+     as the animation is about to enter its first 0% keyframe. */
+  opacity: 0;
+  animation: tf-stamp-halo 11s linear infinite;
+  animation-delay: var(--tf-halo-delay, 0s);
+  animation-fill-mode: backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tf-wordmark,
+  .tf-shimmer,
+  .tf-emoji-avatar,
+  .tf-live-dot,
+  .tf-bar-1,
+  .tf-bar-2,
+  .tf-bar-3,
+  .tf-bar-4,
+  .tf-chip-1,
+  .tf-chip-2,
+  .tf-chip-3,
+  .tf-chip-4 {
+    animation: none !important;
+  }
+  /* Pulses become solid lines (spec's own reduced-motion wording), not
+     invisible ones — disable the travel but keep the glowing stroke.
+     opacity forced past the inline "hidden until measured" starting state
+     (edges.tsx) — reduced motion means the static end state should be
+     visible immediately, not just once a measurement effect has landed. */
+  .tf-comet {
+    animation: none !important;
+    stroke-dasharray: none !important;
+    opacity: 1 !important;
+  }
+  /* Static arrowhead at its original always-visible opacity, matching the
+     comet's own reduced-motion fallback above. */
+  .tf-arrow-pulse {
+    animation: none !important;
+    fill-opacity: 0.55 !important;
+  }
+  /* Radar ping and stamp halos are pure supplementary motion with no
+     static equivalent worth keeping — hidden outright, leaving the stage
+     glow / stamp marker itself (both non-animated) untouched. */
+  .tf-stage-icon::after,
+  .tf-stamp-halo {
+    display: none !important;
+  }
+  /* Packet dots (legacy custom edges, none remain, kept defensively) carry
+     motion via SVG <animateMotion>, which CSS can't stop. */
+  .tf-packet {
+    display: none !important;
+  }
 }
