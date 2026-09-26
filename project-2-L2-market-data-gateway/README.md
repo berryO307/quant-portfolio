@@ -71,31 +71,15 @@ The queue itself is institutional-grade — a 0.4 µs median and 7.4 µs p99 acr
 
 ## Visual Analysis
 
-Four interactive Plotly figures break down the system's behavior. The full analytical walkthrough lives in **[`analysis/notebooks/latency_analysis.ipynb`](analysis/notebooks/latency_analysis.ipynb)** — open it on GitHub for the static render or run it locally for the interactive version.
+The web viewer's Latency Panel shows the system's real behaviour live — sourced directly from the relay's own rolling aggregator (10-second buckets, up to 1 hour of retention), the same live connection driving the order book and trades tape. Nothing here is a static image or a separately-run notebook; select a shorter window (5 minutes / 15 minutes / 1 hour) and the charts redraw from the same live stream, not a recomputation.
 
-### 1. Latency by pipeline stage
+### Latency Distribution
 
-![Latency by pipeline stage](analysis/output/latency_by_stage.png)
+A live heatmap of the full latency histogram across all four pipeline stages, with p50 / p99 / p99.9 / max percentile lines overlaid and independently toggleable — the same shape the original offline analysis produced, now computed continuously instead of after a capture session ends.
 
-Decomposes total latency into parse vs. queue transit vs. full pipeline at p50, p99, and p99.9. Makes it visually unambiguous that the SPSC ring is the disciplined component (7.4 µs at p99) and that any tail risk in the system lives upstream in JSON parsing — not in the inter-thread transport.
+### Stage Latency Breakdown
 
-### 2. System reliability profile
-
-![Reliability profile](analysis/output/reliability_profile.png)
-
-Same data reframed as an SLA conversation: *what fraction of ticks were processed within X µs?* Queue transit holds 99% of ticks under 7.4 µs and 99.9% under 47.9 µs. Parse latency is more variable end-to-end, with p90 at 22.5 µs already wider than the queue's p99.9.
-
-### 3. Live time-series with spike detection
-
-![Baseline time-series](analysis/output/baseline_timeseries.png)
-
-Rolling p99 over a 500-tick window across 25k live ticks. Y-axis is locked to the 22 µs band so the steady state is visible; spike events that exceed the ceiling are tagged with hover-able markers rather than being allowed to compress the whole plot. The dashed line at 7 µs is the global p99 reference. The system runs near the floor with sporadic, isolated excursions — exactly the latency *shape* an HFT system should exhibit.
-
-### 4. Producer-stall root-cause matrix
-
-![Stall matrix](analysis/output/stall_matrix.png)
-
-Correlates the time between consecutive ticks at the producer (x-axis) with queue transit latency (y-axis). The orange p99 line at 7 µs and the red 1 ms reference (the kernel's Generic Receive Offload boundary, where multiple frames coalesce into a single delivery) make it possible to attribute outliers to specific upstream causes — a coalesced batch of frames produces a cluster of correlated spikes, which is fundamentally a property of the kernel's network stack, not the user-space pipeline.
+Per-stage mini-charts (parse, queue, book-update, publish) that expand individually, so a latency shift can be attributed to exactly which part of the pipeline moved, in real time rather than reconstructed afterward from a CSV.
 
 ---
 
@@ -111,7 +95,7 @@ This is a quant-developer portfolio piece. The technical decisions map directly 
 - **Hierarchical bitboard order book.** Two-level bitmap (`L2` chunks → `L1` levels) over a contiguous price ladder. `__builtin_clzll` / `__builtin_ctzll` deliver O(1) best-price lookup that does not degrade in flash-crash scenarios.
 - **Determinism over speed.** Fixed-point `int64_t` price and quantity throughout the pipeline. No floating-point on the hot path. ALU-only ASCII-to-integer parsing — bit-exact across hardware.
 - **Production-grade recovery.** Sequence-gap detection drives a full state-machine recovery: halt strategy → cancel orders → wipe book → reconnect WS → re-snapshot via REST → replay → resume.
-- **Honest analytical instrumentation.** The Python analysis layer doesn't just compute percentiles — it isolates root causes (queue vs. parse vs. kernel coalescing) and presents the data the way a senior engineer would want to read it.
+- **Honest analytical instrumentation.** The Latency Panel doesn't just compute percentiles — it isolates root causes (queue vs. parse vs. kernel coalescing) and presents the data the way a senior engineer would want to read it, live rather than after the fact.
 
 ### Scope Discipline
 
@@ -184,7 +168,7 @@ Everything in this section is a deliberate design choice, not a caveat bolted on
 
 The original capture loop only produced a percentile table after the process exited — useful for a report, useless for noticing a problem *while it's happening*. Rather than treat that as acceptable, the gateway carries a second, cold-path-only pipeline: a lock-free ring buffer drains per-tick latency samples off the hot path into a dedicated export thread, which feeds an in-process geometric-bucket histogram (`include/live_histogram.hpp`) and a terminal progress view that updates p50/p99/p99.9/max **every second while the capture is still running**. The hot path never blocks on any of this — the ring buffer drops and counts on backpressure, exactly like the SPSC queue between the producer and consumer threads. Being able to *watch* a capture's tail behavior develop in real time, rather than reconstruct it after the fact from a CSV, is the point — not an incidental side effect of adding a progress bar.
 
-That same geometric-bucket algorithm is ported three more times — once into the offline Python analysis (`analysis/export_summary.py`), once into the always-on relay's 12-hour rolling aggregator (`relay/src/histogram.ts`), and once into the web viewer's live tail detection (`web/src/lib/tailAttribution.ts`) — specifically so a percentile shown in the terminal during capture, in a downloaded summary afterward, and in the live web dashboard months later all agree with each other. Four implementations of the same small algorithm is a real cost; the alternative (four different approximations that quietly drift apart) is a worse one.
+That same geometric-bucket algorithm is ported two more times — once into the always-on relay's rolling aggregator (`relay/src/histogram.ts`), and once into the web viewer's live tail detection (`web/src/lib/tailAttribution.ts`) — specifically so a percentile shown in the terminal during capture and in the live web dashboard afterward agree with each other. Three implementations of the same small algorithm is a real cost; the alternative (three different approximations that quietly drift apart) is a worse one.
 
 ### An earlier design choice that was later retired
 
@@ -236,17 +220,6 @@ cd quant-command-center/project-2-L2-market-data-gateway
 
 The process pins itself, calibrates the TSC, and starts streaming from Bybit. `Ctrl-C` triggers a graceful, async-signal-safe shutdown via the atomic stop flag.
 
-### Analyze
-
-```bash
-cd analysis
-python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-jupyter lab notebooks/latency_analysis.ipynb
-```
-
-The notebook reads `data/latency.csv` and `data/ticks.bin` and regenerates the four figures above. Static fallbacks are pre-rendered into `analysis/output/`.
-
 ---
 
 ## Repository Layout
@@ -269,15 +242,6 @@ project-2-L2-market-data-gateway/
 │   ├── jitter_canary.hpp    Dedicated host-noise measurement thread
 │   └── thread_queue.hpp     (Legacy mutex queue — kept as reference)
 ├── src/                     C++ implementations
-├── analysis/                Python latency-regime analysis
-│   ├── notebooks/
-│   │   └── latency_analysis.ipynb   ← analytical walkthrough
-│   ├── output/                       ← rendered figures
-│   ├── export_summary.py             ← offline tail-attribution + Altair charts
-│   ├── latency_analysis.py
-│   ├── metrics.py
-│   ├── plots.py
-│   └── ...
 ├── relay/                   Node/TypeScript relay — the only 24/7 piece
 │   ├── src/                 BybitIngestClient, Broadcaster, ConnectionManager,
 │   │                        RollingStatsAggregator, HealthMonitor
@@ -295,19 +259,18 @@ project-2-L2-market-data-gateway/
 
 ---
 
-## Three Documents, Three Altitudes
+## Two Documents, Two Altitudes
 
 | Document | Audience | Time | What it covers |
 | --- | --- | --- | --- |
 | **This README** | Recruiter / hiring manager | 60 sec | What it is, the headline numbers, why it matters |
-| **[`analysis/notebooks/latency_analysis.ipynb`](analysis/notebooks/latency_analysis.ipynb)** | Analyst / engineer | 10 min | How the system actually behaves on real data, with root-cause attribution |
 | **[`notes/Engineering_Notes.md`](notes/Engineering_Notes.md)** | Senior reviewer | 1 hr+ | Architectural thesis, component-by-component theory, hardware-level rationale |
 
 ---
 
 ## Status & Roadmap
 
-This is a working portfolio system, not an internal tooling product. Live captures run on a low-cost VPS to accumulate proprietary tick data; the analysis layer feeds off those captures.
+This is a working portfolio system, not an internal tooling product. Live captures run on a low-cost VPS to accumulate proprietary tick data, surfaced live through the web viewer's Latency Panel.
 
 **Shipped:**
 
