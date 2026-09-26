@@ -5,6 +5,41 @@ export function formatNs(ns: number): string {
   return `${ns.toFixed(0)}ns`;
 }
 
+// Shared by LatencyPanel (KPI cards, tooltip) and StageLatencyBreakdown (its
+// four mini-cards) — the Latency Tails panel's own formatting convention
+// (2-decimal µs, not formatNs's 1-decimal/"us"). Kept distinct from formatNs
+// above rather than unified, since formatNs already has its own established
+// callers (StageBreakdown, TailEventsFeed) with a different rounding
+// convention that isn't this task's concern to change.
+export function formatLatencyNs(ns: number): string {
+  if (ns < 1_000) {
+    return `${ns.toFixed(0)} ns`;
+  }
+
+  if (ns < 1_000_000) {
+    return `${(ns / 1_000).toFixed(2)} µs`;
+  }
+
+  return `${(ns / 1_000_000).toFixed(2)} ms`;
+}
+
+export function formatBucketTime(timestampMs: number): string {
+  return new Date(timestampMs).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+// Whole-minute form used by X-axis labels (LatencyPanel's main chart and,
+// as of Task #8, the Stage Latency Breakdown preview's own X-axis).
+export function formatAxisTime(timestampMs: number): string {
+  return new Date(timestampMs).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 // LatencyChart's x-axis (Phase 8.5): samples/tail events only carry
 // tRecvTsc, a raw per-session TSC cycle count with no fixed relationship to
 // wall-clock time (see LiveSample's comment in lib/types.ts) — there's no
