@@ -1,7 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { isRelayMessage, type LiveSample, type SnapshotRecord, type StatsMessage, type TimedTrade } from "./types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  isRelayMessage,
+  type CoarseSnapshotRecord,
+  type LiveSample,
+  type SnapshotRecord,
+  type StatsMessage,
+  type TimedTrade,
+} from "./types";
 
 // Same reconnect backoff used everywhere else in this project (ws_client.hpp
 // for the gateway's Bybit feed, and the documented contract for a future
@@ -45,6 +52,13 @@ export interface RelayState {
   healthOk: boolean;
   cpuGhz: number;
   latestSnapshot: SnapshotRecord | null;
+  // Wider-rounded books from Hyperliquid's own nSigFigs subscriptions, for
+  // price-bucket tiers the primary (finest-rounding) snapshot doesn't have
+  // enough real price range to fill -- see CoarseSnapshotRecord. Keyed by
+  // nsigfigs: a single tier could not serve every bucket size (see that
+  // type's own comment), so the gateway runs several; lib/orderBook.ts's
+  // pickBestSnapshot picks whichever entry actually fits a given selection.
+  coarseSnapshots: ReadonlyMap<number, CoarseSnapshotRecord>;
   trades: TimedTrade[]; // newest first, capped at MAX_TRADES
   recentSamples: LiveSample[]; // chronological (oldest first), capped at MAX_LIVE_SAMPLES
   stats: StatsMessage | null;
@@ -60,6 +74,13 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
   const [healthOk, setHealthOk] = useState(false);
   const [cpuGhz, setCpuGhz] = useState(DEFAULT_CPU_GHZ);
   const [latestSnapshot, setLatestSnapshot] = useState<SnapshotRecord | null>(null);
+  // A plain object, not a Map, in state -- an object's identity is easy to
+  // refresh immutably on every update (spread into a new one), which is
+  // what React's change detection needs; a Map would need the same
+  // rebuild-on-every-update discipline anyway, so there's nothing gained by
+  // storing one directly here. Converted to a real Map once below, for
+  // callers.
+  const [coarseSnapshotsByTier, setCoarseSnapshotsByTier] = useState<Record<number, CoarseSnapshotRecord>>({});
   const [trades, setTrades] = useState<TimedTrade[]>([]);
   const [recentSamples, setRecentSamples] = useState<LiveSample[]>([]);
   const [stats, setStats] = useState<StatsMessage | null>(null);
@@ -76,6 +97,40 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
   // referencing the connect binding from inside its own initializer (which
   // both violates the TDZ and would go stale across re-renders anyway).
   const connectRef = useRef<() => void>(() => {});
+
+  // Clears whatever the PREVIOUS instrument left behind the moment wsUrl
+  // changes — compared during render (React's documented pattern for
+  // "reset state when a prop changes"), not in an effect, since a
+  // synchronous setState directly in an effect body is what this repo's
+  // lint config rejects; the actual connect() call still happens in the
+  // effect below, which is the legitimate side effect.
+  //
+  // Without this, switching instruments kept the old instrument's last
+  // snapshot/trades/stats sitting in state, mislabeled under the new
+  // instrument's UI, until its first real message overwrote them —
+  // normally fast enough to go unnoticed. Reported live: with the upstream
+  // gateway for the new instrument stalled (a real backend shutdown
+  // deadlock — see BUGS.md and relay_push_client.cpp), nothing ever
+  // arrived to overwrite it, and the UI showed one instrument's price data
+  // under a different instrument's label indefinitely. That backend bug is
+  // fixed separately; this fix stands on its own — a slow-to-connect
+  // instrument should read as "waiting for data", never as silently-wrong
+  // data borrowed from whatever was selected before it.
+  const [prevWsUrl, setPrevWsUrl] = useState(wsUrl);
+  if (wsUrl !== prevWsUrl) {
+    setPrevWsUrl(wsUrl);
+    setLatestSnapshot(null);
+    setTrades([]);
+    setRecentSamples([]);
+    setStats(null);
+    // pendingSamplesRef (the rAF flush buffer below) is deliberately left
+    // alone — it holds at most one animation frame's worth of not-yet-
+    // flushed samples, mutating a ref during render isn't allowed here
+    // anyway, and the worst case (a few old-instrument samples appended
+    // just as the new connection starts) self-corrects within ~16ms as
+    // real new-instrument samples arrive. Not the same class of problem as
+    // a full snapshot/trades list sitting stale for minutes.
+  }
 
   const connect = useCallback(() => {
     const ws = new WebSocket(wsUrl);
@@ -116,6 +171,9 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
         case "snapshot":
           setLatestSnapshot(parsed);
           break;
+        case "coarse_snapshot":
+          setCoarseSnapshotsByTier((prev) => ({ ...prev, [parsed.nsigfigs]: parsed }));
+          break;
         case "trade":
           setTrades((prev) => [{ ...parsed, receivedAtMs: Date.now() }, ...prev].slice(0, MAX_TRADES));
           break;
@@ -124,13 +182,22 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
           break;
         case "sample": {
           const ghz = cpuGhzRef.current;
+          // Each stage is the gap between two adjacent stamps. t_pop falls
+          // back to t_parse for a pre-existing session file that predates
+          // it, which reproduces the old (conflated) stage rather than
+          // dropping the sample: the queue wait collapses into bookUpdate.
+          // See SampleRecord in ./types.
+          const pop = parsed.t_pop ?? parsed.t_parse;
           pendingSamplesRef.current.push({
             tRecvTsc: parsed.t_recv,
             latencyNs: (parsed.t_publish - parsed.t_recv) / ghz,
             parseNs: (parsed.t_parse - parsed.t_recv) / ghz,
-            bookUpdateNs: (parsed.t_book - parsed.t_parse) / ghz,
+            queueNs: (pop - parsed.t_parse) / ghz,
+            bookUpdateNs: (parsed.t_book - pop) / ghz,
             publishNs: (parsed.t_publish - parsed.t_book) / ghz,
-            hostJitterNs: parsed.host_jitter_ns,
+            batchIndex: parsed.batch_index ?? 0,
+            batchSize: parsed.batch_size ?? 1,
+            queueOverflowDropped: parsed.queue_overflow_dropped ?? 0,
           });
           break;
         }
@@ -202,5 +269,10 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
     };
   }, [healthUrl]);
 
-  return { wsConnected, healthOk, cpuGhz, latestSnapshot, trades, recentSamples, stats };
+  const coarseSnapshots = useMemo(
+    () => new Map(Object.entries(coarseSnapshotsByTier).map(([k, v]) => [Number(k), v])),
+    [coarseSnapshotsByTier]
+  );
+
+  return { wsConnected, healthOk, cpuGhz, latestSnapshot, coarseSnapshots, trades, recentSamples, stats };
 }
