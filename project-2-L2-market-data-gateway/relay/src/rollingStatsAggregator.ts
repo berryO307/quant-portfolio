@@ -6,7 +6,7 @@ const BUCKET_MS = 10_000;
 const RETENTION_BUCKETS = 360;
 
 export interface RollingStats {
-  rolling12h: HistogramSnapshot;
+  rollingWindow: HistogramSnapshot;
   currentSession: HistogramSnapshot;
   latencyBuckets: LatencyBucketSnapshot[];
 }
@@ -44,20 +44,25 @@ interface LatencyStats {
   publishNs: number;
 }
 
-// Maintains a 12-hour rolling percentile view, separate from Broadcaster:
-// this class only computes stats, it never touches client connections.
-// Depends on the abstract DataSource interface, same as Broadcaster, so it
-// keeps working unmodified if the upstream feed implementation changes.
+// Maintains a rolling percentile view over the retained window (currently
+// BUCKET_MS * RETENTION_BUCKETS = 10s * 360 = 1 hour — see RollingStats'
+// own rollingWindow field, named for "whatever the retained window is" on
+// purpose so it can't go stale the way its predecessor, rolling12h, did
+// when the window was shrunk from 12 hours to 1 without the name changing
+// to match), separate from Broadcaster: this class only computes stats, it
+// never touches client connections. Depends on the abstract DataSource
+// interface, same as Broadcaster, so it keeps working unmodified if the
+// upstream feed implementation changes.
 //
 // Two histograms are tracked from the same incoming sample stream:
-//   - 12 hourly buckets, keyed by wall-clock hour (Math.floor(now/HOUR_MS)).
-//     Bucket assignment uses the RELAY's receipt time, not the sample's raw
-//     TSC value — TSC has no fixed relationship to wall-clock epoch time
-//     without an explicit calibration point, which the wire protocol
-//     doesn't carry (see the cpu_ghz handshake note in types.ts for the
-//     related TSC-to-ns gap). This is a live-streaming service, so
-//     receipt time and capture time differ by at most the network/queueing
-//     delay — negligible for an hour-granularity rolling window.
+//   - RETENTION_BUCKETS buckets of BUCKET_MS each, keyed by wall-clock time
+//     (Math.floor(now/BUCKET_MS)). Bucket assignment uses the RELAY's
+//     receipt time, not the sample's raw TSC value — TSC has no fixed
+//     relationship to wall-clock epoch time without an explicit calibration
+//     point, which the wire protocol doesn't carry (see the cpu_ghz
+//     handshake note in types.ts for the related TSC-to-ns gap). This is a
+//     live-streaming service, so receipt time and capture time differ by at
+//     most the network/queueing delay — negligible at this granularity.
 //   - one "current session" histogram, reset whenever the DataSource signals
 //     a new upstream connection (a new capture session beginning), so a
 //     brief gateway reconnect doesn't retroactively corrupt session stats
@@ -159,7 +164,7 @@ export class RollingStatsAggregator {
 
   snapshot(): RollingStats {
     return {
-      rolling12h: this.rollingSnapshot(),
+      rollingWindow: this.rollingSnapshot(),
       currentSession: this.sessionHistogram.snapshot(),
       latencyBuckets: [...this.buckets.values()]
       .sort((a, b) => a.timestampMs - b.timestampMs)

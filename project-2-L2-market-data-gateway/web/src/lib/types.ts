@@ -100,14 +100,18 @@ export interface HistogramSnapshot {
   counts: number[];
 }
 
-// AttributionSplit/rolling12hSplit (an IQR-based host-jitter vs pipeline
-// attribution over the relay's 12h rolling window) used to live here too —
+// AttributionSplit/rollingWindowSplit (an IQR-based host-jitter vs pipeline
+// attribution over the relay's rolling window) used to live here too —
 // removed along with host_jitter_ns on the relay side (see
 // rollingStatsAggregator.ts), and it was dead weight even before that:
 // nothing in this app ever rendered the split.
 export interface StatsMessage {
   type: "stats";
-  rolling12h: HistogramSnapshot;
+  // Named for "whatever the retained window currently is," not a fixed
+  // duration — this field used to be called rolling12h, which quietly went
+  // wrong the moment the relay's actual retention shrank to 1 hour (see
+  // rollingStatsAggregator.ts) without the name changing to match.
+  rollingWindow: HistogramSnapshot;
   currentSession: HistogramSnapshot;
   latencyBuckets?: LatencyBucketSnapshot[];
 }
