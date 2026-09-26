@@ -34,10 +34,11 @@ const MAX_LIVE_SAMPLES = 2_000;
 // to React state on every single one would mean that many re-renders and
 // array copies per second. Instead, incoming samples land in a plain ref
 // array (O(1) push, no re-render) and get flushed into state in one batch
-// on this interval — same "don't update UI faster than a human can see it"
-// idea as the Phase 3 terminal progress view's ~1s cadence, just faster
-// since this feeds a chart instead of text.
-const SAMPLE_FLUSH_INTERVAL_MS = 250;
+// once per animation frame (see the effect below) — never faster than the
+// browser can actually paint, and rAF stops firing entirely for a
+// backgrounded tab, unlike a fixed setInterval which keeps ticking (and
+// piling up an ever-larger backlog to flush) whether or not anyone's
+// looking.
 
 export interface RelayState {
   wsConnected: boolean;
@@ -162,18 +163,22 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
   }, [connect]);
 
   useEffect(() => {
-    const flush = setInterval(() => {
-      if (pendingSamplesRef.current.length === 0) return;
-      const incoming = pendingSamplesRef.current;
-      pendingSamplesRef.current = [];
-      setRecentSamples((prev) => {
-        const combined = prev.length > 0 ? prev.concat(incoming) : incoming;
-        return combined.length > MAX_LIVE_SAMPLES
-          ? combined.slice(combined.length - MAX_LIVE_SAMPLES)
-          : combined;
-      });
-    }, SAMPLE_FLUSH_INTERVAL_MS);
-    return () => clearInterval(flush);
+    let rafId: number;
+    const flush = () => {
+      if (pendingSamplesRef.current.length > 0) {
+        const incoming = pendingSamplesRef.current;
+        pendingSamplesRef.current = [];
+        setRecentSamples((prev) => {
+          const combined = prev.length > 0 ? prev.concat(incoming) : incoming;
+          return combined.length > MAX_LIVE_SAMPLES
+            ? combined.slice(combined.length - MAX_LIVE_SAMPLES)
+            : combined;
+        });
+      }
+      rafId = requestAnimationFrame(flush);
+    };
+    rafId = requestAnimationFrame(flush);
+    return () => cancelAnimationFrame(rafId);
   }, []);
 
   useEffect(() => {

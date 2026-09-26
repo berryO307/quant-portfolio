@@ -1,11 +1,9 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useRelayConnection } from "@/lib/useRelayConnection";
-import { computeLiveTailEvents, attributionSplit } from "@/lib/tailAttribution";
 import { INSTRUMENTS } from "@/lib/instruments";
 import { FeedStatusBanner } from "./FeedStatusBanner";
-import { SessionStatsHeader } from "./SessionStatsHeader";
 import { OrderBookLadder } from "./OrderBookLadder";
 import { DepthCurve } from "./DepthCurve";
 import { TradesTape } from "./TradesTape";
@@ -17,20 +15,13 @@ type LeftTab = "orderbook" | "trades";
 
 export function Dashboard() {
   const [instrument, setInstrument] = useState(INSTRUMENTS[0]);
-  const { wsConnected, healthOk, cpuGhz, latestSnapshot, trades, recentSamples, stats } = useRelayConnection(
+  const { wsConnected, healthOk, cpuGhz, latestSnapshot, trades, recentSamples } = useRelayConnection(
     instrument.relayWsUrl,
     instrument.relayHealthUrl
   );
 
   const [hoveredPrice, setHoveredPrice] = useState<number | null>(null);
   const [leftTab, setLeftTab] = useState<LeftTab>("orderbook");
-
-  // Reuses the exact same Phase 8 computation LatencyPanel runs — no
-  // separate "stats header" attribution logic to drift out of sync with it.
-  const currentSessionSplit = useMemo(
-    () => attributionSplit(computeLiveTailEvents(recentSamples).tailEvents),
-    [recentSamples]
-  );
 
   // For the ticker row (Phase 8.5's third pass, replacing the old spread
   // divider) — trades arrive newest-first, so [0] is the last trade and [1]
@@ -89,12 +80,6 @@ export function Dashboard() {
         </div>
 
         <div className="flex min-h-[480px] flex-col overflow-hidden lg:min-h-0">
-          <SessionStatsHeader
-            currentSession={stats?.currentSession ?? null}
-            currentSessionSplit={currentSessionSplit}
-            rolling12h={stats?.rolling12h ?? null}
-            rolling12hSplit={stats?.rolling12hSplit ?? { tailCount: 0, jitterTailCount: 0, pipelineTailCount: 0 }}
-          />
           <div className="min-h-0 flex-1 overflow-hidden">
             <LatencyPanel recentSamples={recentSamples} cpuGhz={cpuGhz} />
           </div>

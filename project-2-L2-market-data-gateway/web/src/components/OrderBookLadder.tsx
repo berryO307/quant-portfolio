@@ -1,28 +1,63 @@
-import { toPrice, toQty, type SnapshotRecord, type TimedTrade } from "@/lib/types";
-import { computeDepthLevels, type DepthLevel } from "@/lib/orderBook";
+"use client";
+
+import { toPrice, toQty, type CoarseSnapshotRecord, type SnapshotRecord, type TimedTrade } from "@/lib/types";
+import { computeDepthLevelsBucketed, TARGET_LADDER_ROWS, type DepthLevel } from "@/lib/orderBook";
 import type { InstrumentConfig } from "@/lib/instruments";
 import { use24hChange, type Change24h } from "@/lib/use24hChange";
+import { useTradeFlash } from "@/lib/useTradeFlash";
+import { PriceBucketSelect } from "./PriceBucketSelect";
 
 interface OrderBookLadderProps {
+  // The live pipeline's snapshot — always the finest rounding. Drives the
+  // spread/ticker row (and the empty state below), which should always
+  // reflect the true finest-precision market regardless of which bucket is
+  // selected for display.
   snapshot: SnapshotRecord | null;
+  // What feeds the bucketed ladder rows. Currently always the same live
+  // gateway snapshot as `snapshot` below — this used to sometimes be a
+  // separately-fetched, coarser-rounded snapshot pulled directly from
+  // Hyperliquid's REST API for wide bucket selections, bypassing the
+  // gateway entirely. Removed: reported live, it kept the order book and
+  // depth curve updating even after the gateway process was stopped, since
+  // that fetch had nothing to do with gateway/relay connectivity. A kept-
+  // separate prop rather than collapsing onto `snapshot` outright, since
+  // "what feeds the bucketed view" and "what the true finest-precision
+  // market is" are still conceptually different questions even though they
+  // resolve to the same value today.
+  // Widened beyond SnapshotRecord: for the coarsest bucket tiers this is
+  // coarseSnapshot (Dashboard.tsx), a CoarseSnapshotRecord -- see
+  // needsCoarseSnapshot in lib/instruments.ts. Same shape (bids/asks),
+  // different price rounding.
+  bucketedSnapshot: SnapshotRecord | CoarseSnapshotRecord | null;
   instrument: InstrumentConfig;
+  // Owned by Dashboard, not this component — DepthCurve shows the exact
+  // same bucketed book, so there's one selector for both, here, matching
+  // Hyperliquid's own UI (a single control, not two independent ones).
+  bucketSize: number;
+  onBucketSizeChange: (size: number) => void;
   hoveredPrice?: number | null;
   onHoverPrice?: (price: number | null) => void;
   lastTrade?: TimedTrade | null;
   lastTradeDirection?: "up" | "down";
 }
 
-// Fixed row budget per side, independent of how many levels the snapshot
+// Upper bound on rows per side, independent of how many levels the snapshot
 // actually has (at most EXPORT_SNAPSHOT_DEPTH=100, often fewer in a thin
-// book — and now also more than fit here, since that constant was bumped
-// well past what any ladder should try to display; see the truncation
-// below). Phase 8.5's second pass: rendering only the real rows left the
-// ladder's height at the mercy of the current book depth, floating in the
-// middle of its container with dead space above/below. Padding each side
-// out to a constant row count keeps the spread divider anchored at the same
-// vertical position and the ladder always filling its box, book depth
-// aside.
-const LEVELS_PER_SIDE = 12;
+// book). Shared with lib/orderBook.ts's pickBestSnapshot (TARGET_LADDER_ROWS)
+// so "does this bucket size have enough real range to fill the ladder" and
+// "how many rows does the ladder actually try to show" agree by
+// construction.
+//
+// The ACTUAL row count rendered is min(MAX_LEVELS_PER_SIDE, real levels on
+// the deeper side) — not always the max. A fixed row budget regardless of
+// real depth (the previous behaviour) left a thin book padded out with a
+// wall of empty placeholder rows, and forced the ladder's container to a
+// constant height whether or not there was real data to fill it. Sizing to
+// the real data instead means a shallow book renders a short ladder — see
+// Dashboard.tsx, where the ladder's wrapper is sized to content (flex-none)
+// and the depth curve below it is flex-1, so it grows to fill whatever
+// vertical space the ladder didn't need.
+const MAX_LEVELS_PER_SIDE = TARGET_LADDER_ROWS;
 
 function padTop<T>(arr: T[], size: number): (T | null)[] {
   const pad = Math.max(0, size - arr.length);
@@ -48,7 +83,10 @@ function padBottom<T>(arr: T[], size: number): (T | null)[] {
 // have originated from DepthCurve instead).
 export function OrderBookLadder({
   snapshot,
+  bucketedSnapshot,
   instrument,
+  bucketSize,
+  onBucketSizeChange,
   hoveredPrice = null,
   onHoverPrice,
   lastTrade = null,
@@ -58,115 +96,218 @@ export function OrderBookLadder({
   // ordering rules don't allow a hook call to be skipped on some renders
   // (e.g. only once a snapshot exists) and not others.
   const change24h = use24hChange(instrument);
+  const tradeFlash = useTradeFlash(lastTrade, bucketSize);
 
   if (!snapshot || (snapshot.bids.length === 0 && snapshot.asks.length === 0)) {
     return (
-      <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+      <div className="flex min-h-[200px] items-center justify-center text-xs text-muted-foreground">
         Waiting for order book snapshot…
       </div>
     );
   }
 
-  const { bids: bidsWithTotal, asks: asksWithTotal } = computeDepthLevels(snapshot);
+  const { bids: bidsWithTotal, asks: asksWithTotal } = computeDepthLevelsBucketed(
+    bucketedSnapshot ?? snapshot,
+    bucketSize
+  );
 
-  // The ladder shows a fixed 12 rows/side regardless of how many levels the
-  // export pipeline actually carries (bumped past 10 to smooth out the
-  // depth curve — see include/export_pipeline.hpp's EXPORT_SNAPSHOT_DEPTH).
-  // Slicing to the 12 nearest the spread BEFORE padding keeps the ladder's
-  // own fixed row budget regardless of that; DepthCurve intentionally does
-  // NOT do this same slicing — it wants every real level it can get.
-  const bidsNearSpread = bidsWithTotal.slice(0, LEVELS_PER_SIDE);
-  const asksNearSpread = asksWithTotal.slice(0, LEVELS_PER_SIDE);
+  // Spread is a property of the REAL market, not of whatever bucket size
+  // is currently selected for display — computed from the raw snapshot's
+  // own best bid/ask, not the (possibly coarser) bucketed levels above.
+  const bestBidRaw = snapshot.bids[0]?.[0] ?? null;
+  const bestAskRaw = snapshot.asks[0]?.[0] ?? null;
+  const hasSpread = bestBidRaw != null && bestAskRaw != null;
+  const spread = hasSpread ? toPrice(bestAskRaw! - bestBidRaw!) : null;
+  const midPrice = hasSpread ? toPrice((bestBidRaw! + bestAskRaw!) / 2) : null;
+  const spreadPct = spread != null && midPrice ? (spread / midPrice) * 100 : null;
+
+  // Slice to the MAX_LEVELS_PER_SIDE nearest the spread on each side (the
+  // export pipeline can carry far more — see
+  // include/export_pipeline.hpp's EXPORT_SNAPSHOT_DEPTH). DepthCurve
+  // intentionally does NOT do this same slicing — it wants every real
+  // level it can get.
+  const bidsNearSpread = bidsWithTotal.slice(0, MAX_LEVELS_PER_SIDE);
+  const asksNearSpread = asksWithTotal.slice(0, MAX_LEVELS_PER_SIDE);
   const asksDisplay = [...asksNearSpread].reverse(); // worst-to-best, top-to-bottom
 
+  // Rows actually rendered per side: whichever side has more real levels,
+  // capped at MAX_LEVELS_PER_SIDE — NOT always the max. A shallow book (say
+  // 4 real levels/side) renders a 4-row ladder, not a 20-row one padded out
+  // with 16 empty placeholders; a deep book fills all the way to the cap.
+  // Both sides pad to the SAME count (the deeper side's) so the spread
+  // divider stays centered regardless of a bid/ask depth imbalance.
+  const levelsPerSide = Math.min(MAX_LEVELS_PER_SIDE, Math.max(bidsNearSpread.length, asksNearSpread.length));
+
   // Bar-width scaling relative to what's actually shown, not the full book
-  // depth — reusing computeDepthLevels' own maxTotal (from ALL real levels)
-  // here would make every visible bar look nearly empty once the export
-  // pipeline carries far more levels than the ladder displays.
+  // depth — reusing computeDepthLevelsBucketed's own maxTotal (from ALL real
+  // levels) here would make every visible bar look nearly empty once the
+  // export pipeline carries far more levels than the ladder displays.
   const maxTotal = Math.max(bidsNearSpread.at(-1)?.total ?? 0, asksNearSpread.at(-1)?.total ?? 0, 1);
 
   // Placeholders go at the outer edge (top for asks, bottom for bids) so
   // real levels always stay anchored nearest the spread divider, regardless
   // of how many are padded in.
-  const asksPadded = padTop(asksDisplay, LEVELS_PER_SIDE);
-  const bidsPadded = padBottom(bidsNearSpread, LEVELS_PER_SIDE);
+  const asksPadded = padTop(asksDisplay, levelsPerSide);
+  const bidsPadded = padBottom(bidsNearSpread, levelsPerSide);
 
   return (
+    // h-full: fills whatever height its parent (OrderBookDepthSplit's
+    // ladder wrapper) currently gives it — which itself is either "auto"
+    // (sized to real content, when there's room — a % height against an
+    // "auto" ancestor resolves as auto too, so this falls back to natural
+    // content sizing in that case, same as before) or a capped/dragged
+    // pixel value once content would exceed it. Either way, the asks/bids
+    // sections below split whatever height this ends up with 50/50.
     <div className="flex h-full min-h-0 flex-col text-xs">
-      <LadderHeader />
-      <div className="flex flex-1 min-h-0 flex-col justify-center overflow-hidden">
-        {asksPadded.map((row, i) =>
-          row ? (
-            <LadderRow
-              key={`ask-${row.price}`}
-              row={row}
-              side="ask"
-              maxTotal={maxTotal}
-              hovered={row.price === hoveredPrice}
-              onHoverPrice={onHoverPrice}
-              priceDecimals={instrument.priceDecimals}
-              qtyDecimals={instrument.qtyDecimals}
-            />
-          ) : (
-            <PlaceholderRow key={`ask-empty-${i}`} />
-          )
-        )}
-        <TickerRow
+      <LadderHeader
+        bucketSize={bucketSize}
+        onBucketSizeChange={onBucketSizeChange}
+        bucketOptions={instrument.priceBucketOptions}
+        instrumentLabel={instrument.shortLabel}
+      />
+      {/* Asks and bids each get an EQUAL flex-1 share of whatever height is
+          available, not one shared overflow-hidden block. A single block
+          (the previous structure) clips whatever falls past its bottom
+          edge — since bids render last (physically at the bottom), that
+          silently ate into bids first while every ask stayed visible, no
+          matter how far the ladder was squeezed. Two equal-share sections
+          shrink in lockstep, so squeezing the ladder always removes the
+          same number of rows from each side, converging toward the spread
+          symmetrically instead of favoring one side. */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        {/* justify-end: asks render worst-to-best, top-to-bottom (farthest
+            from the spread first) — anchoring this section's content to
+            its OWN bottom means overflow-hidden clips from the TOP first,
+            i.e. the farthest asks go first and the ones nearest the spread
+            (at the bottom of this section, right above the divider row)
+            stay visible longest. Mirrors the bids section below exactly. */}
+        <div className="flex min-h-0 flex-1 flex-col justify-end overflow-hidden">
+          {asksPadded.map((row, i) =>
+            row ? (
+              <LadderRow
+                key={`ask-${row.price}`}
+                row={row}
+                side="ask"
+                maxTotal={maxTotal}
+                hovered={row.price === hoveredPrice}
+                onHoverPrice={onHoverPrice}
+                priceDecimals={instrument.priceDecimals}
+                qtyDecimals={instrument.qtyDecimals}
+                flashKey={
+                  tradeFlash?.side === "ask" && tradeFlash.bucketPrice === row.price ? tradeFlash.key : undefined
+                }
+              />
+            ) : (
+              <PlaceholderRow key={`ask-empty-${i}`} />
+            )
+          )}
+        </div>
+        <SpreadAndTickerRow
+          spread={spread}
+          spreadPct={spreadPct}
           lastTrade={lastTrade}
           direction={lastTradeDirection}
           change24h={change24h}
           priceDecimals={instrument.priceDecimals}
         />
-        {bidsPadded.map((row, i) =>
-          row ? (
-            <LadderRow
-              key={`bid-${row.price}`}
-              row={row}
-              side="bid"
-              maxTotal={maxTotal}
-              hovered={row.price === hoveredPrice}
-              onHoverPrice={onHoverPrice}
-              priceDecimals={instrument.priceDecimals}
-              qtyDecimals={instrument.qtyDecimals}
-            />
-          ) : (
-            <PlaceholderRow key={`bid-empty-${i}`} />
-          )
-        )}
+        {/* Default (top-anchored) flow: bids render best-to-worst,
+            top-to-bottom, so the farthest bid sits at the bottom of this
+            section — overflow-hidden clipping from the bottom removes it
+            first, same "farthest goes first" rule as the asks section
+            above, just mirrored. */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {bidsPadded.map((row, i) =>
+            row ? (
+              <LadderRow
+                key={`bid-${row.price}`}
+                row={row}
+                side="bid"
+                maxTotal={maxTotal}
+                hovered={row.price === hoveredPrice}
+                onHoverPrice={onHoverPrice}
+                priceDecimals={instrument.priceDecimals}
+                qtyDecimals={instrument.qtyDecimals}
+                flashKey={
+                  tradeFlash?.side === "bid" && tradeFlash.bucketPrice === row.price ? tradeFlash.key : undefined
+                }
+              />
+            ) : (
+              <PlaceholderRow key={`bid-empty-${i}`} />
+            )
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
-function LadderHeader() {
+// Same 3-column grid template (grid-cols-3 gap-2 px-3) as LadderRow/
+// PlaceholderRow below, so "Price"/"Size (…)"/"Total (…)" land in exactly
+// the same column widths as the price/size/total cells underneath them —
+// the previous flex-based header (bucket select left, "Size"/"Total"
+// right-justified as a pair) had no shared width source with the data
+// grid, so its labels drifted out of alignment with their columns as soon
+// as the row values' digit counts differed from the header text's own
+// width.
+//
+// The price-bucket dropdown sits in the "Price Bucket" column, matching
+// Hyperliquid's own order-book UI, which puts its equivalent selector in
+// this same top-left spot rather than as a separate control row competing
+// for vertical space. Labeled "Price Bucket", not bare "Price" — every row
+// below is grouped by the selected bucket size (see
+// lib/orderBook.ts's computeDepthLevelsBucketed), not a raw exchange
+// price, and the dropdown right next to it IS the bucket-size control, so
+// the column should say what it's actually showing.
+function LadderHeader({
+  bucketSize,
+  onBucketSizeChange,
+  bucketOptions,
+  instrumentLabel,
+}: {
+  bucketSize: number;
+  onBucketSizeChange: (size: number) => void;
+  bucketOptions: readonly number[];
+  instrumentLabel: string;
+}) {
   return (
-    <div className="grid grid-cols-3 gap-2 border-b border-border px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-      <span>Price</span>
-      <span className="text-right">Size</span>
-      <span className="text-right">Total</span>
+    <div className="grid grid-cols-3 items-center gap-2 border-b border-border px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+      <div className="flex items-center gap-1.5">
+        <span>Price Bucket</span>
+        <PriceBucketSelect
+          value={bucketSize}
+          onChange={onBucketSizeChange}
+          options={bucketOptions}
+          className="rounded border border-border bg-panel px-1 py-0.5 font-mono text-[10px] normal-case tabular-nums text-foreground"
+        />
+      </div>
+      <span className="text-right">Size ({instrumentLabel})</span>
+      <span className="text-right">Total ({instrumentLabel})</span>
     </div>
   );
 }
 
-// Replaces the old "spread X.XXXX" divider row (Phase 8.5's third pass) —
-// modeled on the reference screenshot's ticker: the last trade's
-// direction/price, nothing else. An earlier version of this also showed
-// best bid/ask alongside as secondary context, but that duplicated the two
-// rows immediately above and below it (the ladder already shows both), so
-// it was just repeated numbers rather than new information — removed.
+// Spread (absolute + %) and the last-trade/24h-change ticker on one line —
+// reported as two stacked rows reading like unrelated information when
+// they're really the same "where is the market right now" context.
+// Spread on the left, ticker on the right, matching Hyperliquid's own
+// order-book UI's single divider row at the bid/ask boundary.
 //
-// The bare price on its own was reported as "vague" — no sense of whether
-// it's high, low, or ordinary for the instrument. The 24h change (from
-// Hyperliquid's public REST info endpoint — see lib/use24hChange.ts, a
-// separate, unrelated data source from the live tick/book/trade feed)
-// gives it that context, in brackets, exactly like an actual exchange
-// ticker would.
-function TickerRow({
+// The bare last-trade price on its own was reported as "vague" earlier —
+// no sense of whether it's high, low, or ordinary for the instrument. The
+// 24h change (from Hyperliquid's public REST info endpoint — see
+// lib/use24hChange.ts, a separate, unrelated data source polled every 60s,
+// not the live tick/book/trade feed — 24h context doesn't need live-tick
+// cadence) gives it that, in brackets, like an actual exchange ticker.
+function SpreadAndTickerRow({
+  spread,
+  spreadPct,
   lastTrade,
   direction,
   change24h,
   priceDecimals,
 }: {
+  spread: number | null;
+  spreadPct: number | null;
   lastTrade: TimedTrade | null;
   direction: "up" | "down";
   change24h: Change24h;
@@ -176,20 +317,30 @@ function TickerRow({
   const arrow = direction === "down" ? "↓" : "↑";
 
   return (
-    <div className="flex items-center justify-end gap-2 border-y border-border bg-panel px-3 py-1 font-mono text-xs tabular-nums">
-      {lastTrade ? (
-        <span className={`font-semibold ${color}`}>
-          {arrow} {toPrice(lastTrade.price).toFixed(priceDecimals)}
+    <div className="flex items-center justify-between gap-3 border-y border-border bg-panel px-3 py-1 font-mono text-[10px] tabular-nums">
+      {spread != null && spreadPct != null ? (
+        <span className="text-muted-foreground">
+          Spread <span className="text-foreground">{spread.toFixed(priceDecimals)}</span>{" "}
+          <span className="text-foreground">{spreadPct.toFixed(3)}%</span>
         </span>
       ) : (
-        <span className="text-muted-foreground">waiting for trades…</span>
+        <span />
       )}
-      {change24h.pcnt != null && (
-        <span className={change24h.pcnt >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}>
-          ({change24h.pcnt >= 0 ? "+" : ""}
-          {(change24h.pcnt * 100).toFixed(2)}% 24h)
-        </span>
-      )}
+      <span className="flex items-center gap-2 text-xs">
+        {lastTrade ? (
+          <span className={`font-semibold ${color}`}>
+            {arrow} {toPrice(lastTrade.price).toFixed(priceDecimals)}
+          </span>
+        ) : (
+          <span className="text-muted-foreground">waiting for trades…</span>
+        )}
+        {change24h.pcnt != null && (
+          <span className={change24h.pcnt >= 0 ? "text-[#3fb950]" : "text-[#f85149]"}>
+            ({change24h.pcnt >= 0 ? "+" : ""}
+            {(change24h.pcnt * 100).toFixed(2)}% 24h)
+          </span>
+        )}
+      </span>
     </div>
   );
 }
@@ -212,6 +363,7 @@ function LadderRow({
   onHoverPrice,
   priceDecimals,
   qtyDecimals,
+  flashKey,
 }: {
   row: DepthLevel;
   side: "bid" | "ask";
@@ -220,6 +372,13 @@ function LadderRow({
   onHoverPrice?: (price: number | null) => void;
   priceDecimals: number;
   qtyDecimals: number;
+  // The flashing trade's own trade_id, only when THIS row is the one it
+  // printed against — see lib/useTradeFlash.ts. Keyed onto the overlay
+  // div below (not just toggled via a className) so React mounts a fresh
+  // DOM node per trade, restarting the CSS animation even when two trades
+  // land on the same bucketed price back-to-back — reusing the same node
+  // wouldn't replay an animation that's already finished.
+  flashKey?: number;
 }) {
   const textColor = side === "bid" ? "text-[#3fb950]" : "text-[#f85149]";
   const barColor = side === "bid" ? "bg-[#3fb950]/15" : "bg-[#f85149]/15";
@@ -232,6 +391,13 @@ function LadderRow({
       onMouseLeave={() => onHoverPrice?.(null)}
     >
       <div className={`absolute inset-y-0 right-0 ${barColor}`} style={{ width: `${widthPct}%` }} aria-hidden />
+      {flashKey != null && (
+        <div
+          key={flashKey}
+          className={`absolute inset-0 ${side === "bid" ? "flash-bid" : "flash-ask"}`}
+          aria-hidden
+        />
+      )}
       <span className={`relative z-10 font-mono tabular-nums ${textColor}`}>
         {toPrice(row.price).toFixed(priceDecimals)}
       </span>
