@@ -6,8 +6,8 @@ Reads a session_<epoch_ms>.ndjson.gz file produced by ColdPathExporter
 geometric-bucket histogram as the Phase 3 in-process LiveHistogram (see
 include/live_histogram.hpp) so live and offline numbers agree, flags tail
 events (samples above the session's global p99.9) and attributes each one
-to either host jitter or the dominant pipeline stage, and writes a compact
-summary.json plus exploratory Altair charts for offline review.
+to the dominant pipeline stage, and writes a compact summary.json plus
+exploratory Altair charts for offline review.
 
 Usage:
     python export_summary.py <session.ndjson.gz> [--cpu-ghz 3.2] [--out-dir DIR]
@@ -119,11 +119,37 @@ def load_session(path: str | Path, cpu_ghz: float = 3.2) -> pd.DataFrame:
 
     for col in ("t_recv", "t_parse", "t_book", "t_publish"):
         samples[col] = samples[col].astype(np.int64)
-    samples["host_jitter_ns"] = samples["host_jitter_ns"].astype(np.int64)
+
+    # t_pop is optional: session files captured before the gateway exported
+    # it fall back to t_parse, reproducing the OLD conflated stage (queue
+    # wait folded into book-update) rather than dropping the sample. Same
+    # fallback the web app and debug-dashboard already use — see
+    # SampleRecord in web/src/lib/types.ts and debug-dashboard/app.py.
+    if "t_pop" not in samples.columns:
+        samples["t_pop"] = samples["t_parse"]
+    else:
+        samples["t_pop"] = samples["t_pop"].fillna(samples["t_parse"])
+    samples["t_pop"] = samples["t_pop"].astype(np.int64)
 
     ns_per_cycle = 1.0 / cpu_ghz
+    # Four stages that tile the timeline without gaps or overlap:
+    #   t_recv -> t_parse -> t_pop -> t_book -> t_publish
+    #
+    # parse is cumulative, not marginal: Hyperliquid sends trades as arrays
+    # and every member of a frame shares t_recv, so for tick k of a frame
+    # this covers the parse cost of ticks 0..k-1 as well as tick k's own —
+    # a deliberate project-scope simplification (there used to be a separate
+    # in-frame-wait stage isolating the marginal cost; removed as not worth
+    # the extra per-tick field for what this project measures).
+    #
+    # book_update uses t_pop, not t_parse. t_parse is stamped on the producer
+    # thread before the queue push, so t_book - t_parse spans the entire queue
+    # wait and reports it as book-update time. That defect made every
+    # queue-caused tail event attribute to "book-update", and it hid the queue
+    # stage from this script entirely (it had no queue column at all).
     samples["parse_ns"]       = (samples["t_parse"]   - samples["t_recv"])  * ns_per_cycle
-    samples["book_update_ns"] = (samples["t_book"]    - samples["t_parse"]) * ns_per_cycle
+    samples["queue_ns"]       = (samples["t_pop"]     - samples["t_parse"]) * ns_per_cycle
+    samples["book_update_ns"] = (samples["t_book"]    - samples["t_pop"])   * ns_per_cycle
     samples["publish_ns"]     = (samples["t_publish"] - samples["t_book"])  * ns_per_cycle
     samples["latency_ns"]     = (samples["t_publish"] - samples["t_recv"])  * ns_per_cycle
 
@@ -133,48 +159,35 @@ def load_session(path: str | Path, cpu_ghz: float = 3.2) -> pd.DataFrame:
 # ── Tail event detection + attribution ──────────────────────────────────────
 
 # Matches latency.csv's existing column names (Phase 1/2) exactly.
-STAGE_COLUMNS = {"parse": "parse_ns", "book-update": "book_update_ns", "publish": "publish_ns"}
+# "queue" was absent until the stage definitions above were corrected, so no tail
+# event could ever be attributed to queue wait — they all landed on "book-update".
+STAGE_COLUMNS = {"parse": "parse_ns", "queue": "queue_ns",
+                 "book-update": "book_update_ns", "publish": "publish_ns"}
 
 
-def find_tail_events(samples: pd.DataFrame, percentiles: dict) -> tuple[pd.DataFrame, dict]:
+def find_tail_events(samples: pd.DataFrame, percentiles: dict) -> pd.DataFrame:
     """
     Flag samples above the session's global p99.9 as tail events and
-    attribute each one to "host_jitter" (if this sample's own
-    host_jitter_ns is elevated relative to the session baseline) or to
-    whichever of the three measurable stage deltas is largest.
-
-    Baseline/threshold: median + 5*MAD of host_jitter_ns across the whole
-    session (same robust-statistics approach analysis/metrics.py already
-    uses for jitter elsewhere), falling back to median + 1000ns if MAD == 0
-    (a session where jitter is essentially constant, so any nonzero
-    deviation would otherwise look "infinitely elevated").
+    attribute each one to whichever of the four measurable stage deltas is
+    largest.
     """
     threshold = percentiles["p999_ns"]
     tail = samples[samples["latency_ns"] > threshold].copy()
 
-    jitter = samples["host_jitter_ns"].to_numpy(dtype=np.float64)
-    baseline = float(np.median(jitter))
-    mad = float(np.median(np.abs(jitter - baseline)))
-    jitter_threshold = baseline + (5.0 * mad if mad > 0 else 1000.0)
-
-    jitter_info = {"baseline_ns": baseline, "elevated_threshold_ns": jitter_threshold}
-
     if tail.empty:
-        return tail, jitter_info
+        return tail
 
     stage_vals = tail[list(STAGE_COLUMNS.values())].to_numpy()
     dominant_stage = np.array(list(STAGE_COLUMNS.keys()))[np.argmax(stage_vals, axis=1)]
+    tail["attribution"] = dominant_stage
 
-    is_host_jitter = tail["host_jitter_ns"].to_numpy() > jitter_threshold
-    tail["attribution"] = np.where(is_host_jitter, "host_jitter", dominant_stage)
-
-    return tail, jitter_info
+    return tail
 
 
 # ── Summary JSON ─────────────────────────────────────────────────────────────
 
 def build_summary(session_path: Path, samples: pd.DataFrame, percentiles: dict,
-                   tail: pd.DataFrame, jitter_info: dict, cpu_ghz: float) -> dict:
+                   tail: pd.DataFrame, cpu_ghz: float) -> dict:
     duration_ns = float(samples["t_publish"].max() - samples["t_recv"].min()) / cpu_ghz
 
     # Session-wide per-stage medians (exact, over the full sample set — not
@@ -185,6 +198,7 @@ def build_summary(session_path: Path, samples: pd.DataFrame, percentiles: dict,
     # not STAGE_COLUMNS' hyphenated attribution-label keys.
     stage_medians_ns = {
         "parse":       float(samples["parse_ns"].median()),
+        "queue":       float(samples["queue_ns"].median()),
         "book_update": float(samples["book_update_ns"].median()),
         "publish":     float(samples["publish_ns"].median()),
     }
@@ -198,16 +212,15 @@ def build_summary(session_path: Path, samples: pd.DataFrame, percentiles: dict,
         },
         "percentiles_ns": percentiles,
         "stage_medians_ns": stage_medians_ns,
-        "host_jitter": jitter_info,
         "tail_events": [
             {
                 "index":          int(idx),
                 "t_recv_tsc":     int(row.t_recv),
                 "latency_ns":     float(row.latency_ns),
-                "host_jitter_ns": int(row.host_jitter_ns),
                 "attribution":    row.attribution,
                 "stage_ns": {
                     "parse":       float(row.parse_ns),
+                    "queue":       float(row.queue_ns),
                     "book_update": float(row.book_update_ns),
                     "publish":     float(row.publish_ns),
                 },
@@ -225,8 +238,8 @@ def build_summary(session_path: Path, samples: pd.DataFrame, percentiles: dict,
 
 ATTRIBUTION_COLORS = {
     "normal":      "#8b949e",  # matches web/src/lib/theme.ts's COLOR_MUTED exactly
-    "host_jitter": "#d29922",
     "parse":       "#58a6ff",
+    "queue":       "#2dd4bf",
     "book-update": "#bc8cff",
     "publish":     "#3fb950",
 }
@@ -320,25 +333,10 @@ def chart_latency_histogram(samples: pd.DataFrame, percentiles: dict) -> alt.Cha
             "value": [percentiles["p50_ns"], percentiles["p99_ns"], percentiles["p999_ns"]],
             "label": ["p50", "p99", "p99.9"],
         }))
-        .mark_rule(color=ATTRIBUTION_COLORS["host_jitter"], strokeDash=[4, 3])
+        .mark_rule(color="#b19655", strokeDash=[4, 3])  # matches web/src/lib/theme.ts's COLOR_SEVERE
         .encode(x="value:Q")
     )
     return (bars + rules).properties(title="Latency distribution (geometric buckets)", width=700, height=320)
-
-
-def chart_jitter_over_time(samples: pd.DataFrame, tail: pd.DataFrame) -> alt.Chart:
-    """host_jitter_ns over time — same low-opacity treatment as the latency
-    scatter, since it's also one point per sample."""
-    plot_df = _sample_for_scatter(samples, tail)[["t_recv", "host_jitter_ns"]]
-    return (
-        alt.Chart(plot_df)
-        .mark_point(opacity=0.2, filled=True, size=14, color=ATTRIBUTION_COLORS["host_jitter"])
-        .encode(
-            x=alt.X("t_recv:Q", title="recv (TSC)"),
-            y=alt.Y("host_jitter_ns:Q", title="host_jitter_ns"),
-        )
-        .properties(title="Host jitter canary reading over the session", width=700, height=320)
-    )
 
 
 # ── Entry point ──────────────────────────────────────────────────────────────
@@ -348,9 +346,9 @@ def run(session_path: Path, out_dir: Path, cpu_ghz: float) -> None:
 
     samples = load_session(session_path, cpu_ghz=cpu_ghz)
     percentiles = bucket_snapshot(samples["latency_ns"].to_numpy())
-    tail, jitter_info = find_tail_events(samples, percentiles)
+    tail = find_tail_events(samples, percentiles)
 
-    summary = build_summary(session_path, samples, percentiles, tail, jitter_info, cpu_ghz)
+    summary = build_summary(session_path, samples, percentiles, tail, cpu_ghz)
     summary_path = out_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
     print(f"wrote {summary_path}  ({len(samples)} samples, {len(tail)} tail events)")
@@ -358,7 +356,6 @@ def run(session_path: Path, out_dir: Path, cpu_ghz: float) -> None:
     register_dark_theme()
     chart_latency_scatter(samples, tail).save(out_dir / "latency_scatter.html")
     chart_latency_histogram(samples, percentiles).save(out_dir / "latency_histogram.html")
-    chart_jitter_over_time(samples, tail).save(out_dir / "host_jitter.html")
     print(f"wrote charts to {out_dir}")
 
 
