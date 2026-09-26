@@ -93,18 +93,31 @@ function sideSpanRaw(side: readonly [number, number][]): number {
   return Math.abs(side[side.length - 1]![0] - side[0]![0]);
 }
 
-// A per-side estimate of a snapshot's OWN native rounding: the average gap
-// between its consecutive real levels. Hyperliquid always returns the same
-// ~20 levels/side regardless of nSigFigs (BUGS.md #24) — a coarser tier's
-// wider total SPAN is entirely explained by a wider gap PER level, not by
-// carrying more real levels, so dividing span by (count - 1) recovers that
-// per-level gap directly from the snapshot's own data (same "never a
-// hardcoded per-instrument table" approach the rest of this file already
-// uses), without needing to know nSigFigs-to-dollar conversion math or the
-// instrument's live price magnitude.
+// A per-side estimate of a snapshot's OWN native rounding: the SMALLEST gap
+// between any two of its consecutive real levels — not the average. A real
+// order book is never perfectly uniform even at its own native rounding:
+// confirmed live, BTC's primary (finest) subscription's bids included gaps
+// of $1, $1, $3, $1, $1 in its first five levels alone — one sparser-than-
+// typical gap (no resting order at every single native tick near the
+// spread) is enough to pull the AVERAGE gap above the true native tick
+// size, which is exactly what regressed WTI's (and, caught only by
+// re-verifying against live data instead of trusting a partial report,
+// BTC's) OWN finest bucket option: with zero margin between the requested
+// bucket and the true native tick, an average nudged up by one sparse gap
+// was enough to make bucketRaw < averageGap, rejecting the correct source
+// and falling through to the widest available (and far too coarse) tier.
+// The MINIMUM gap is immune to this — it reports the finest resolution
+// this source has PROVEN it can produce (at least two adjacent levels
+// really are that close together), regardless of how sparse the book gets
+// elsewhere. Still derived entirely from the snapshot's own data, per this
+// file's existing "never a hardcoded per-instrument table" approach.
 function nativeGapRaw(side: readonly [number, number][]): number {
-  if (side.length < 2) return 0; // can't measure a gap; treat as arbitrarily fine
-  return sideSpanRaw(side) / (side.length - 1);
+  let min = Infinity;
+  for (let i = 1; i < side.length; i++) {
+    const gap = Math.abs(side[i]![0] - side[i - 1]![0]);
+    if (gap > 0 && gap < min) min = gap;
+  }
+  return Number.isFinite(min) ? min : 0; // can't measure a gap; treat as arbitrarily fine
 }
 
 // Picks whichever available snapshot (the primary, finest-rounding book, or
