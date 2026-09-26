@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Inter, JetBrains_Mono, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import Script from "next/script";
 import "./globals.css";
+import { TopBar } from "@/components/TopBar";
+import { Sidebar } from "@/components/Sidebar";
+import { SidebarStateProvider } from "@/lib/sidebarState";
 
 // Names picked to match globals.css's --font-sans/--font-mono, which
 // reference var(--font-inter)/var(--font-jetbrains-mono) directly — the
@@ -16,6 +20,22 @@ const jetbrainsMono = JetBrains_Mono({
   subsets: ["latin"],
 });
 
+// Redesign typography: IBM Plex Sans for UI, IBM Plex Mono for
+// numbers/code. Neither was loaded before (Inter/JetBrains Mono were), so
+// they're added here rather than assumed; globals.css puts them first in
+// --font-sans/--font-mono and keeps the originals as the fallback.
+const plexSans = IBM_Plex_Sans({
+  variable: "--font-plex-sans",
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+});
+
+const plexMono = IBM_Plex_Mono({
+  variable: "--font-plex-mono",
+  subsets: ["latin"],
+  weight: ["400", "500", "600"],
+});
+
 export const metadata: Metadata = {
   title: "L2 Gateway Viewer",
   description: "Live order book ladder and trades tape, fed by the relay's WebSocket feed.",
@@ -23,21 +43,83 @@ export const metadata: Metadata = {
 
 // Runs before React hydrates (a plain inline <script>, not next/script —
 // anything deferred would paint the wrong theme first, then flash to the
-// right one). Reads the same localStorage key lib/useTheme.ts's toggle
+// right one). Reads the same localStorage key lib/useTheme.ts's setTheme()
 // writes to and applies the `dark` class synchronously, so the very first
-// paint already matches whatever the user picked last time. Defaults to
-// dark — this dashboard's original, only appearance before the toggle
-// existed — rather than following the OS/browser's prefers-color-scheme,
-// since dark was a deliberate design choice here, not a system fallback.
-const THEME_INIT_SCRIPT = `(function(){try{var t=localStorage.getItem("theme");if(t!=="light"){document.documentElement.classList.add("dark");}}catch(e){document.documentElement.classList.add("dark");}})();`;
+// paint already matches whatever the user picked last time — including
+// "system", which is resolved against matchMedia right here rather than
+// left to flash the fallback appearance until React mounts. Nothing stored
+// yet still defaults to dark, not the OS preference — this dashboard's
+// original, only appearance before the toggle existed, kept as the
+// fallback for a genuinely first-time visitor; only an explicit "system"
+// selection follows the OS.
+const THEME_SET_SCRIPT = `(function(){try{var t=localStorage.getItem("theme");var dark;if(t==="light"){dark=false;}else if(t==="system"){dark=window.matchMedia&&window.matchMedia("(prefers-color-scheme: dark)").matches;}else{dark=true;}if(dark){document.documentElement.classList.add("dark");}}catch(e){document.documentElement.classList.add("dark");}})();`;
+
+// React 19 warns ("Encountered a script tag while rendering React
+// component") on ANY raw <script> element in the render tree — a known
+// false positive for exactly this anti-flash-of-wrong-theme pattern (same
+// open issue against next-themes, shadcn/ui's dark-mode guide, and HeroUI
+// as of Sept 2026; no clean upstream fix exists). The script still runs
+// correctly and the theme still works — this is dev-console noise, not a
+// real bug. Removing the inline script instead would reintroduce the
+// actual flash it exists to prevent, so the warning is suppressed instead.
+//
+// Has to be part of THIS SAME synchronous script, not a separate module
+// loaded via a client component's useEffect: the warning fires DURING
+// React's hydration pass, when it first encounters the <script> tag in the
+// tree — a useEffect only runs AFTER a component mounts, which is after
+// hydration has already happened, too late to catch it. Prepending the
+// patch here means it's already active by the time hydration's warning
+// would otherwise fire, since it's one synchronous script executed before
+// React's hydration bundle even runs.
+//
+// Gated by NODE_ENV at render time (baked into the string server-side,
+// not a runtime check) so this never ships to production, where dev-only
+// console warnings don't apply and there's nothing to suppress.
+const SUPPRESS_SCRIPT_TAG_WARNING =
+  process.env.NODE_ENV === "development"
+    ? `(function(){try{var e=console.error;console.error=function(){if(typeof arguments[0]==="string"&&arguments[0].indexOf("Encountered a script tag")!==-1){return;}e.apply(console,arguments);};}catch(err){}})();`
+    : "";
+
+const THEME_INIT_SCRIPT = SUPPRESS_SCRIPT_TAG_WARNING + THEME_SET_SCRIPT;
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
-    <html lang="en" className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}>
+    <html
+      lang="en"
+      className={`${inter.variable} ${jetbrainsMono.variable} ${plexSans.variable} ${plexMono.variable} h-full antialiased`}
+      // The theme-init script (below) adds the "dark" class to this element
+      // BEFORE React hydrates, by design — that's what prevents a flash of
+      // the wrong theme on load (see THEME_SET_SCRIPT's own comment). That
+      // makes the server-rendered className and the actual DOM's className
+      // intentionally differ by the time hydration runs, which React
+      // otherwise reports as a hydration mismatch on this exact element.
+      // suppressHydrationWarning tells React that divergence on <html>
+      // specifically is expected and not a bug — it does not suppress
+      // mismatches anywhere else in the tree, only on this one element's
+      // own attributes.
+      suppressHydrationWarning
+    >
       <head>
-        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+        <Script id="theme-init" strategy="beforeInteractive">
+          {THEME_INIT_SCRIPT}
+        </Script>
       </head>
-      <body className="min-h-full flex flex-col bg-background text-foreground">{children}</body>
+      {/* App shell: top bar across the full width, collapsible rail on the
+          left (an off-canvas drawer below `md`, opened via TopBar's
+          hamburger button — see Sidebar.tsx), routed content filling the
+          rest. SidebarStateProvider wraps TopBar too now, not just the row
+          below, since the hamburger button that opens the mobile drawer
+          lives in TopBar and needs to write the same shared state
+          Sidebar reads. */}
+      <body className="h-full flex flex-col overflow-hidden bg-background text-foreground">
+        <SidebarStateProvider>
+          <TopBar />
+          <div className="flex min-h-0 flex-1">
+            <Sidebar />
+            <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
+          </div>
+        </SidebarStateProvider>
+      </body>
     </html>
   );
 }
