@@ -29,8 +29,13 @@ HyperliquidAdapter::HyperliquidAdapter(SpscRingBuffer<Tick, 1024>& queue,
                                         std::atomic<bool>& stop_flag,
                                         LatencyStore& latency,
                                         std::atomic<uint64_t>& last_u,
-                                        std::string symbol)
-    : queue_(queue), stop_flag_(stop_flag), latency_(latency), last_u_(last_u), symbol_(std::move(symbol)) {
+                                        std::atomic<uint64_t>& queue_overflow_dropped,
+                                        std::string symbol,
+                                        CoarseBookState* coarse_state,
+                                        int coarse_nsigfigs)
+    : queue_(queue), stop_flag_(stop_flag), latency_(latency), last_u_(last_u),
+      queue_overflow_dropped_(queue_overflow_dropped), symbol_(std::move(symbol)),
+      coarse_state_(coarse_state), coarse_nsigfigs_(coarse_nsigfigs) {
     scratch_bids_.reserve(32);
     scratch_asks_.reserve(32);
 }
@@ -106,6 +111,13 @@ void HyperliquidAdapter::connect_and_read() {
     std::string sub_msg;
     if (channel_ == Channel::Trades) {
         sub_msg = R"({"method":"subscribe","subscription":{"type":"trades","coin":")" + symbol_ + R"("}})";
+    } else if (channel_ == Channel::CoarseDepth) {
+        // Same l2Book subscription as the real Depth channel, plus nSigFigs
+        // — Hyperliquid's own coarser-rounded book, requested directly from
+        // the exchange rather than approximated by bucketing an
+        // already-narrow snapshot. See Channel::CoarseDepth's own comment.
+        sub_msg = R"({"method":"subscribe","subscription":{"type":"l2Book","coin":")" + symbol_ +
+                  R"(","nSigFigs":)" + std::to_string(coarse_nsigfigs_) + "}}";
     } else {
         sub_msg = R"({"method":"subscribe","subscription":{"type":"l2Book","coin":")" + symbol_ + R"("}})";
     }
@@ -159,14 +171,70 @@ void HyperliquidAdapter::trigger_resync() {
 void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
     uint64_t t1 = rdtscp();
 
-    simdjson::dom::element doc;
-    if (parser_.parse(raw_msg.data(), raw_msg.size(), false).get(doc)) return;
+    // WIRE FIELD ORDER MATTERS HERE. On-Demand is forward-only: reading fields
+    // in the order they appear costs one pass, while reading them out of order
+    // makes simdjson rewind and rescan, which silently gives back the entire
+    // reason for using On-Demand. Captured live from Hyperliquid (61 frames):
+    //
+    //   top level      : channel, data
+    //   l2Book data    : coin, time, levels        level element: px, sz, n
+    //   trades element : coin, side, px, sz, time, hash, tid, users
+    //
+    // Every read below, and in parse_depth/parse_trade, follows those orders.
+    // If Hyperliquid ever reorders its fields this keeps working — it just
+    // gets slower, with no error, so treat a parse-stage regression as a
+    // reason to re-capture and re-check the order rather than to look here.
+    simdjson::ondemand::document doc;
+    if (parser_.iterate(raw_msg).get(doc)) return;
 
     std::string_view channel;
-    if (doc["channel"].get(channel) != simdjson::SUCCESS) return;
+    if (doc["channel"].get_string().get(channel) != simdjson::SUCCESS) return;
 
-    simdjson::dom::element data_field;
+    simdjson::ondemand::value data_field;
     if (doc["data"].get(data_field) != simdjson::SUCCESS) return;
+
+    // Deliberately bypasses everything below: no Tick, no queue_.push(),
+    // no latency_.record(), no OrderBook involvement at all — this channel
+    // exists purely to give the web UI's coarsest price buckets real data
+    // to aggregate (see Channel::CoarseDepth's own comment), and must never
+    // touch the structures the real trading pipeline owns. Handed off to
+    // the consumer thread via coarse_state_ (a small mutex-guarded
+    // "latest value" slot, not a queue — see coarse_book_state.hpp) since
+    // that thread is the sole producer for the SPSC export ring and this
+    // one runs on its own, separate connection/thread.
+    if (channel_ == Channel::CoarseDepth) {
+        if (channel != "l2Book" || !coarse_state_) return;
+        simdjson::ondemand::array levels;
+        if (data_field["levels"].get_array().get(levels) != simdjson::SUCCESS) return;
+
+        auto fill = [](simdjson::ondemand::array arr, std::vector<PriceLevel>& out) -> bool {
+            out.clear();
+            for (auto row : arr) {
+                std::string_view px_sv, sz_sv;
+                if (row["px"].get_string().get(px_sv) != simdjson::SUCCESS) continue;
+                if (row["sz"].get_string().get(sz_sv) != simdjson::SUCCESS) continue;
+                PriceLevel lv;
+                if (!parse_scaled(px_sv, lv.price, PRICE_SCALE)) continue;
+                if (!parse_scaled(sz_sv, lv.qty, QTY_SCALE)) continue;
+                out.push_back(lv);
+            }
+            return true;
+        };
+
+        std::vector<PriceLevel> bids, asks;
+        int idx = 0;
+        for (auto side_elem : levels) {
+            simdjson::ondemand::array side_arr;
+            if (side_elem.get_array().get(side_arr) != simdjson::SUCCESS) return;
+            if (idx == 0) fill(side_arr, bids);
+            else if (idx == 1) fill(side_arr, asks);
+            ++idx;
+        }
+        if (idx < 2 || bids.empty() || asks.empty()) return;
+
+        coarse_state_->update(std::move(bids), std::move(asks), rdtscp());
+        return;
+    }
 
     Tick tick{};
     bool ok = false;
@@ -175,26 +243,66 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
         ok = parse_depth(data_field, tick);
     } else if (channel == "trades") {
         // Hyperliquid sends trades as an array, same as Bybit's publicTrade.
-        simdjson::dom::array trade_arr = data_field;
+        // t1 is the frame's arrival stamp and is deliberately shared by
+        // every trade below — they did all arrive in the same frame, so
+        // each one's end-to-end latency genuinely starts there. "parse"
+        // (t2 - t1) is therefore cumulative through this tick's position in
+        // the frame, not this tick's own marginal cost alone — see Tick's
+        // own comment in types.hpp for why that's an accepted simplification
+        // rather than an oversight.
+        simdjson::ondemand::array trade_arr;
+        if (data_field.get_array().get(trade_arr) != simdjson::SUCCESS) return;
+        // count_elements() must happen before iteration and rewinds the cursor
+        // afterwards — see parser_'s declaration for why the cost is accepted.
+        size_t n_trades = 0;
+        if (trade_arr.count_elements().get(n_trades) != simdjson::SUCCESS) return;
+        if (trade_arr.reset() != simdjson::SUCCESS) { /* reset() is best-effort */ }
+        const uint16_t batch_size = static_cast<uint16_t>(n_trades);
+        uint16_t idx = 0;
         for (auto trade_elem : trade_arr) {
+            simdjson::ondemand::value trade_val;
+            if (trade_elem.get(trade_val) != simdjson::SUCCESS) { ++idx; continue; }
             Tick trade_tick{};
-            if (parse_trade(trade_elem, trade_tick)) {
+            if (parse_trade(trade_val, trade_tick)) {
                 uint64_t t2 = rdtscp();
-                latency_.parse_cycles.emplace_back(t2 - t1);
-                trade_tick.t1_tsc = t1;
-                trade_tick.t2_tsc = t2;
-                queue_.push(std::move(trade_tick));
+                // parse_cycles is NOT recorded here. LatencyStore::dump() zips the
+                // four stage vectors by index, so they must be appended by one
+                // thread, for the same tick, under the same filter. Recording parse
+                // on this producer thread while the consumer records the other three
+                // guarantees divergence: this thread parses ahead of the consumer,
+                // still records for ticks the consumer drops on queue overflow, and
+                // records for pre-seed ticks the consumer now skips. The timestamps
+                // needed to compute this stage travel with the Tick (t1_tsc..t2_tsc),
+                // so the consumer derives it there.
+                trade_tick.t1_tsc      = t1;
+                trade_tick.t2_tsc      = t2;
+                trade_tick.batch_index = idx;
+                trade_tick.batch_size  = batch_size;
+                // Return value checked: SpscRingBuffer<Tick,1024>::push()
+                // returns false (drops the tick) when full, and until this
+                // fix that return was discarded at both call sites in this
+                // function — a silent, uninstrumented drop path with no
+                // way to ever know it had fired.
+                if (!queue_.push(std::move(trade_tick))) {
+                    queue_overflow_dropped_.fetch_add(1, std::memory_order_relaxed);
+                }
             }
+            ++idx;
         }
         return;
     }
 
     if (ok) {
+        // l2Book is one tick per frame, so batch_index/batch_size keep their
+        // defaults (0 of 1).
         uint64_t t2 = rdtscp();
-        latency_.parse_cycles.emplace_back(t2 - t1);
+        // See the batched-trade site above: parse_cycles is derived by the
+        // consumer from t1_tsc..t2_tsc.
         tick.t1_tsc = t1;
         tick.t2_tsc = t2;
-        queue_.push(std::move(tick));
+        if (!queue_.push(std::move(tick))) {
+            queue_overflow_dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 }
 
@@ -204,7 +312,7 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
 // Hyperliquid's own message timestamp (epoch ms, monotonically increasing
 // per coin) purely as a strictly-increasing marker for main.cpp's existing
 // last_u bookkeeping, not a real sequence-continuity number.
-bool HyperliquidAdapter::parse_depth(simdjson::dom::element data, Tick& tick) {
+bool HyperliquidAdapter::parse_depth(simdjson::ondemand::value data, Tick& tick) {
     tick.data = DepthUpdate{};
     auto& d   = std::get<DepthUpdate>(tick.data);
 
@@ -217,7 +325,8 @@ bool HyperliquidAdapter::parse_depth(simdjson::dom::element data, Tick& tick) {
     d.event_time = time_ms;
     d.trans_time = time_ms;
 
-    auto fill_levels = [](simdjson::dom::array arr, std::vector<PriceLevel>& out) {
+    // Level element wire order is px, sz, n — read px then sz, never backwards.
+    auto fill_levels = [](simdjson::ondemand::array arr, std::vector<PriceLevel>& out) -> bool {
         out.clear();
         for (auto row : arr) {
             PriceLevel lv;
@@ -228,23 +337,37 @@ bool HyperliquidAdapter::parse_depth(simdjson::dom::element data, Tick& tick) {
             if (!parse_scaled(sz_sv, lv.qty, QTY_SCALE)) continue;
             out.push_back(lv);
         }
+        return true;
     };
 
-    simdjson::dom::array levels;
+    simdjson::ondemand::array levels;
     if (data["levels"].get_array().get(levels) != simdjson::SUCCESS) return false;
 
-    simdjson::dom::array bid_levels, ask_levels;
+    // Each side is filled DURING the walk of `levels`, not captured first and
+    // filled afterwards. Under DOM the two inner arrays could be held and
+    // re-read later; an On-Demand array is a cursor into a single forward pass,
+    // so advancing to side 1 invalidates any handle still held on side 0.
     size_t idx = 0;
-    for (auto side_arr : levels) {
-        if (idx == 0) { if (side_arr.get_array().get(bid_levels) != simdjson::SUCCESS) return false; }
-        else if (idx == 1) { if (side_arr.get_array().get(ask_levels) != simdjson::SUCCESS) return false; }
+    for (auto side_elem : levels) {
+        simdjson::ondemand::array side_arr;
+        if (side_elem.get_array().get(side_arr) != simdjson::SUCCESS) return false;
+        if (idx == 0)      { if (!fill_levels(side_arr, scratch_bids_)) return false; }
+        else if (idx == 1) { if (!fill_levels(side_arr, scratch_asks_)) return false; }
         ++idx;
     }
     if (idx < 2) return false;
 
-    fill_levels(bid_levels, scratch_bids_);
-    fill_levels(ask_levels, scratch_asks_);
-
+    // move + re-reserve, NOT fill-in-place. Looks like the scratch buffers
+    // are pointless here (std::move steals the block, so the reserve below
+    // is a fresh malloc each time), but the alternative is worse: `tick` is
+    // a fresh stack local per dispatch and parse_depth assigns a fresh
+    // DepthUpdate into it, so d.bids/d.asks start at capacity 0 — filling
+    // them directly would grow 0->32 through ~6 reallocations per side
+    // instead of the one this costs. Measured depth rate is ~0.19/s (2167
+    // depth ticks in 11,655s), so one allocation per side here is ~0.4
+    // allocs/sec and not a hot-path concern. Removing it entirely would
+    // need the ring buffer to hand out a slot to fill in place, which is a
+    // queue-API change, not a local one.
     d.bids = std::move(scratch_bids_);
     d.asks = std::move(scratch_asks_);
 
@@ -262,9 +385,31 @@ bool HyperliquidAdapter::parse_depth(simdjson::dom::element data, Tick& tick) {
 // bid/ask: every "B" trade printed at the best ask, every "A" trade at the
 // best bid — same is_buyer_maker semantic BybitAdapter::parse_agg_trade
 // already uses ("S"=="Sell" -> true), just a different source field/values.
-bool HyperliquidAdapter::parse_trade(simdjson::dom::element data, Tick& tick) {
+bool HyperliquidAdapter::parse_trade(simdjson::ondemand::value data, Tick& tick) {
     tick.data = AggTrade{};
     auto& t   = std::get<AggTrade>(tick.data);
+
+    // READ ORDER IS LOAD-BEARING. The wire order of a trade element, captured
+    // live, is: coin, side, px, sz, time, hash, tid, users. The reads below
+    // follow it exactly (skipping coin, hash and users, which are not used).
+    //
+    // The previous DOM version read time, tid, px, sz, side — near worst-case
+    // for a forward-only cursor, since every field after the first would send
+    // simdjson backwards through the object. Under DOM that cost nothing
+    // because the whole document was already materialised; under On-Demand it
+    // would rewind and rescan per field and hand back the entire benefit.
+    //
+    // side first. Unlike the others this one is tolerated as missing (the
+    // original treated a missing side as "not buyer maker" rather than as a
+    // malformed trade), so it must not early-return.
+    std::string_view side_sv;
+    if (data["side"].get_string().get(side_sv) == simdjson::SUCCESS) {
+        t.is_buyer_maker = (side_sv == "A");
+    }
+
+    std::string_view px_sv, sz_sv;
+    if (data["px"].get_string().get(px_sv) != simdjson::SUCCESS) return false;
+    if (data["sz"].get_string().get(sz_sv) != simdjson::SUCCESS) return false;
 
     int64_t time_ms = 0;
     if (data["time"].get_int64().get(time_ms) != simdjson::SUCCESS) return false;
@@ -275,16 +420,10 @@ bool HyperliquidAdapter::parse_trade(simdjson::dom::element data, Tick& tick) {
     // UUID string (no hashing needed).
     if (data["tid"].get_int64().get(t.agg_trade_id) != simdjson::SUCCESS) return false;
 
-    std::string_view px_sv, sz_sv;
-    if (data["px"].get_string().get(px_sv) != simdjson::SUCCESS) return false;
-    if (data["sz"].get_string().get(sz_sv) != simdjson::SUCCESS) return false;
+    // Conversions after the reads: parse_scaled touches no simdjson state, so
+    // doing them here keeps the cursor moving strictly forward above.
     if (!parse_scaled(px_sv, t.price, PRICE_SCALE)) return false;
     if (!parse_scaled(sz_sv, t.qty, QTY_SCALE)) return false;
-
-    std::string_view side_sv;
-    if (data["side"].get_string().get(side_sv) == simdjson::SUCCESS) {
-        t.is_buyer_maker = (side_sv == "A");
-    }
 
     return true;
 }

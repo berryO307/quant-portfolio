@@ -36,12 +36,31 @@ function bucketIndex(valueNs: number): number {
   return lo;
 }
 
+// Task #7 investigation note: p50Ns/p99Ns/p999Ns are HDR-histogram-style
+// UPPER-BOUND ESTIMATES, not exact sample values — snapshotFromCounts()
+// below returns BUCKET_BOUNDARIES[i] (a fixed geometric bucket edge) for
+// whichever bucket the target-ranked sample falls into, while maxNs is the
+// exact raw value tracked separately in record(). These are two genuinely
+// different kinds of number sharing one struct.
+//
+// Consequence: p999Ns > maxNs is a LEGITIMATE, EXPECTED outcome, not a bug.
+// It happens whenever the p999 target rank lands in the same bucket as the
+// true maximum sample (common for moderate sample counts — e.g. for any
+// bucket with <=1000 total samples, floor(total*0.999) targets the very
+// top-ranked sample, i.e. maxNs's own bucket), because that bucket's upper
+// boundary is virtually always slightly above the exact value it contains.
+// See histogram.test.ts for a concrete, deterministic reproduction and the
+// exact arithmetic. This is intentional and shared byte-for-byte with
+// include/live_histogram.hpp and analysis/export_summary.py — do not "fix"
+// it with clamping (e.g. Math.min(p999Ns, maxNs)); that would silently
+// discard the actual bucket-resolution information the estimate carries.
 export interface HistogramSnapshot {
   count: number;
   maxNs: number;
   p50Ns: number;
   p99Ns: number;
   p999Ns: number;
+  counts: number[];
 }
 
 // One geometric-bucket histogram. Counts are a plain Float64Array indexed by
@@ -74,18 +93,26 @@ export class Histogram {
 
   snapshot(): HistogramSnapshot {
     if (this.total === 0) {
-      return { count: 0, maxNs: 0, p50Ns: 0, p99Ns: 0, p999Ns: 0 };
+      return { 
+        count: 0, 
+        maxNs: 0, 
+        p50Ns: 0, 
+        p99Ns: 0, 
+        p999Ns: 0,
+        counts: Array.from(this.counts),
+      };
     }
     return snapshotFromCounts(this.counts, this.total, this.maxNs);
   }
 }
 
 // Single arbitrary-percentile lookup over bucket counts, same cumulative-
-// count method as snapshotFromCounts below. Used by RollingStatsAggregator
-// to derive an IQR-based robust threshold (median + 5*(p75-p25)) for its
-// host_jitter histogram — MAD needs raw deviations, which aren't
-// recoverable from bucket counts alone, but percentiles are exactly what
-// this bucket representation already supports directly.
+// count method as snapshotFromCounts below. Percentiles are exactly what
+// this bucket representation supports directly (unlike, say, MAD, which
+// needs raw deviations that aren't recoverable from bucket counts alone) —
+// kept as a general-purpose utility even though RollingStatsAggregator's
+// own use of it (an IQR-based host-jitter threshold) was removed along with
+// host_jitter_ns.
 export function percentileFromCounts(counts: ArrayLike<number>, total: number, p: number): number {
   if (total === 0) return 0;
   const target = Math.floor((total * p) / 100);
@@ -107,7 +134,14 @@ export function snapshotFromCounts(
   maxNs: number
 ): HistogramSnapshot {
   if (total === 0) {
-    return { count: 0, maxNs: 0, p50Ns: 0, p99Ns: 0, p999Ns: 0 };
+    return { 
+      count: total, 
+      maxNs: 0, 
+      p50Ns: 0, 
+      p99Ns: 0, 
+      p999Ns: 0,
+      counts: Array.from(counts),
+    };
   }
 
   const t50 = Math.floor((total * 50) / 100);
@@ -129,5 +163,11 @@ export function snapshotFromCounts(
     }
   }
 
-  return { count: total, maxNs, p50Ns, p99Ns, p999Ns };
+  return { 
+    count: total, 
+    maxNs, 
+    p50Ns, 
+    p99Ns, 
+    p999Ns, 
+    counts: Array.from(counts) };
 }

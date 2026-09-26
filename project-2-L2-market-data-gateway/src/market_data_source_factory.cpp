@@ -10,6 +10,7 @@ std::unique_ptr<IMarketDataSource> make_market_data_source(
     SpscRingBuffer<Tick, 1024>& queue,
     std::atomic<bool>& stop_flag,
     LatencyStore& latency,
-    std::atomic<uint64_t>& last_u) {
-    return std::make_unique<HyperliquidAdapter>(queue, stop_flag, latency, last_u, cfg.symbol);
+    std::atomic<uint64_t>& last_u,
+    std::atomic<uint64_t>& queue_overflow_dropped) {
+    return std::make_unique<HyperliquidAdapter>(queue, stop_flag, latency, last_u, queue_overflow_dropped, cfg.symbol);
 }
