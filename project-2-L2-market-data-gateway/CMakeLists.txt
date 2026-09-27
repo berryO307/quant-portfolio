@@ -4,9 +4,16 @@ project(L2DataCapture CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Fix Boost warning (MSYS2 uses legacy FindBoost) — harmless on Linux too,
-# CMP0167 only changes how Boost::* targets are found.
-cmake_policy(SET CMP0167 OLD)
+# Fix Boost warning (MSYS2 uses legacy FindBoost). CMP0167 itself didn't
+# exist before CMake 3.30 -- setting an unknown policy is a hard configure
+# error ("Policy is not known to this version of CMake"), not a no-op, so
+# this must be gated. Confirmed live on Ubuntu 22.04's stock cmake (3.22.1):
+# configure failed outright without this guard. Below 3.30, cmake_policy
+# can't have this choice anyway -- its own pre-3.30 default already behaves
+# like OLD, so there's nothing to set.
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 OLD)
+endif()
 
 if(WIN32)
     # Force static linking of GCC and Standard C++ libraries — an MSYS2/MinGW
