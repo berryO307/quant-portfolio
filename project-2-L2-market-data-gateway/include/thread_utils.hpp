@@ -83,46 +83,63 @@ inline void configure_self_high_performance(int core_id, const std::string& name
     // pthread_setaffinity_np there returns EINVAL, and since its return
     // value was never checked (see below), that failure was completely
     // silent: no log line, thread left unpinned by accident rather than by
-    // design. Skipping the attempt outright, once there's no real core to
+    // design. Skipping the pin outright, once there's no real core to
     // dedicate, is strictly better than an invalid pin that does nothing
     // anyway (see this file's own HotCores comment on why two threads
     // forced onto one core is worse than neither being pinned).
-    if (core_id < 0) {
+    //
+    // IMPORTANT: this only skips AFFINITY, not the real-time-priority
+    // request below. An earlier version of this fix skipped the whole
+    // function on core_id<0, which silently threw out something still
+    // useful and independent: SCHED_FIFO doesn't require a dedicated core
+    // at all — it just makes this thread preempt ordinary SCHED_OTHER
+    // processes (cron, journald, unattended-upgrades, etc.) when both want
+    // the single shared core at the same instant. "No spare core to pin
+    // to" and "don't bother asking to win scheduling contention on the
+    // core we do have" are not the same decision.
+    const bool have_core = core_id >= 0;
+    if (have_core) {
+        std::cout << "[thread] Configuring " << name << " on Core " << core_id << "...\n";
+    } else {
         std::cout << "[thread] '" << name << "' — no distinct physical core available "
-                     "(see [cores] warning above); running unpinned, no real-time "
-                     "priority requested either.\n";
-        return;
+                     "(see [cores] warning above); running unpinned, still requesting "
+                     "real-time priority so it can preempt ordinary processes on "
+                     "whichever core it lands on.\n";
     }
-    std::cout << "[thread] Configuring " << name << " on Core " << core_id << "...\n";
 #ifdef _WIN32
-    // 1. Set Affinity for the calling thread
     HANDLE hThread = GetCurrentThread();
-    DWORD_PTR mask = (static_cast<DWORD_PTR>(1) << core_id);
-    if (!SetThreadAffinityMask(hThread, mask)) {
-        std::cerr << "   [!] Failed Affinity. Error: " << GetLastError() << "\n";
+    if (have_core) {
+        // 1. Set Affinity for the calling thread
+        DWORD_PTR mask = (static_cast<DWORD_PTR>(1) << core_id);
+        if (!SetThreadAffinityMask(hThread, mask)) {
+            std::cerr << "   [!] Failed Affinity. Error: " << GetLastError() << "\n";
+        }
     }
 
-    // 2. Set Priority to Time Critical
+    // 2. Set Priority to Time Critical — independent of affinity, see above.
     if (!SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL)) {
         std::cerr << "   [!] Failed Priority. Error: " << GetLastError() << "\n";
     }
 #else
     // Linux Implementation
-    cpu_set_t cpuset;
-    CPU_ZERO(&cpuset);
-    CPU_SET(core_id, &cpuset);
-    // Return value previously discarded entirely — a failed pin (e.g.
-    // core_id pointing at a logical CPU that doesn't exist on this machine)
-    // was completely silent: no warning, thread just left running on
-    // whatever core the OS happened to schedule it on, indistinguishable
-    // from a successful pin in every log this process produces. pin_thread_
-    // self() (used for cold-path threads) already checked and logged this;
-    // this call site — the one actually used for the hot-path producer/
-    // consumer threads — did not. Matching that same diagnostic here.
-    int affinity_rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
-    if (affinity_rc != 0) {
-        std::cerr << "   [!] pthread_setaffinity_np failed for '" << name << "' on core "
-                  << core_id << " (rc=" << affinity_rc << ") — thread will float freely\n";
+    if (have_core) {
+        cpu_set_t cpuset;
+        CPU_ZERO(&cpuset);
+        CPU_SET(core_id, &cpuset);
+        // Return value previously discarded entirely — a failed pin (e.g.
+        // core_id pointing at a logical CPU that doesn't exist on this
+        // machine) was completely silent: no warning, thread just left
+        // running on whatever core the OS happened to schedule it on,
+        // indistinguishable from a successful pin in every log this
+        // process produces. pin_thread_self() (used for cold-path threads)
+        // already checked and logged this; this call site — the one
+        // actually used for the hot-path producer/consumer threads — did
+        // not. Matching that same diagnostic here.
+        int affinity_rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+        if (affinity_rc != 0) {
+            std::cerr << "   [!] pthread_setaffinity_np failed for '" << name << "' on core "
+                      << core_id << " (rc=" << affinity_rc << ") — thread will float freely\n";
+        }
     }
 
     // SCHED_FIFO requires CAP_SYS_NICE — an unprivileged caller gets EPERM
