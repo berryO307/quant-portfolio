@@ -68,8 +68,8 @@ export interface ChartTheme {
 // style yet.
 const FALLBACK: ChartTheme = {
   grid: "#111b2a",
-  border: "#1e293b",
-  muted: "#94a3b8",
+  border: "#262626",
+  muted: "#a1a1a1",
   text: "#cbd5e1",
   bid: "#3fb950",
   ask: "#f85149",
@@ -83,8 +83,12 @@ const FALLBACK: ChartTheme = {
   heatHot: "#fb923c",
   heatCrit: "#f85149",
   panel: "#0a1424",
-  palette: ["#3b82f6", "#60a5fa", "#38bdf8", "#475569", "#6366f1"],
-  fontFamily: "Inter, system-ui, sans-serif",
+  // Accurately converted from the new theme's --chart-1..5 oklch() values
+  // (oklch->linear-sRGB->sRGB, not eyeballed) — matches resolveVar's own
+  // conversion once mounted; this is only what a chart shows for the
+  // instant before that first resolve (SSR / pre-paint).
+  palette: ["#91C5FF", "#3A81F6", "#2563EF", "#1A4EDA", "#1F3FAD"],
+  fontFamily: "DM Sans, system-ui, sans-serif",
   radiusPx: 6,
 };
 

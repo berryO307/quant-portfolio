@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import { DM_Sans, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import "./globals.css";
 import { TopBar } from "@/components/TopBar";
@@ -7,33 +7,23 @@ import { Sidebar } from "@/components/Sidebar";
 import { SidebarStateProvider } from "@/lib/sidebarState";
 
 // Names picked to match globals.css's --font-sans/--font-mono, which
-// reference var(--font-inter)/var(--font-jetbrains-mono) directly — the
-// tweakcn theme's font stack, wired to real loaded fonts instead of falling
-// back to system-ui/monospace.
-const inter = Inter({
-  variable: "--font-inter",
+// reference var(--font-dm-sans)/var(--font-geist-mono) directly — this
+// theme's own font stack, wired to real loaded fonts instead of falling
+// back to system-ui/monospace. Replaces the previous theme's IBM Plex
+// Sans/Mono (UI) and Inter/JetBrains Mono (fallback tier) entirely, rather
+// than keeping four font families loaded when only one sans + one mono are
+// actually specified by the current theme. "variable" loads the single
+// variable-weight file instead of enumerating static weights.
+const dmSans = DM_Sans({
+  variable: "--font-dm-sans",
   subsets: ["latin"],
+  weight: "variable",
 });
 
-const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-jetbrains-mono",
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
   subsets: ["latin"],
-});
-
-// Redesign typography: IBM Plex Sans for UI, IBM Plex Mono for
-// numbers/code. Neither was loaded before (Inter/JetBrains Mono were), so
-// they're added here rather than assumed; globals.css puts them first in
-// --font-sans/--font-mono and keeps the originals as the fallback.
-const plexSans = IBM_Plex_Sans({
-  variable: "--font-plex-sans",
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-});
-
-const plexMono = IBM_Plex_Mono({
-  variable: "--font-plex-mono",
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
+  weight: "variable",
 });
 
 export const metadata: Metadata = {
@@ -86,7 +76,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${inter.variable} ${jetbrainsMono.variable} ${plexSans.variable} ${plexMono.variable} h-full antialiased`}
+      className={`${dmSans.variable} ${geistMono.variable} h-full antialiased`}
       // The theme-init script (below) adds the "dark" class to this element
       // BEFORE React hydrates, by design — that's what prevents a flash of
       // the wrong theme on load (see THEME_SET_SCRIPT's own comment). That
