@@ -71,13 +71,16 @@ The queue itself is institutional-grade — a 0.4 µs median and 7.4 µs p99 acr
 
 ## Known Limitations
 
-**Free-tier cloud latency numbers are not comparable to the desktop numbers above.** The live Oracle Cloud deployment (`l2-gateway`, a `VM.Standard.E2.1.Micro` — one of the Always Free x86 shapes) reports queue-stage P99/P99.9/MAX an order of magnitude worse than the same binary on a dedicated desktop, with large periodic spikes concentrated almost entirely in the queue stage rather than parse/book-update/publish. Confirmed root cause, not a logic bug:
+**Free-tier cloud latency numbers are not directly comparable to the desktop numbers above, though the gap is now mostly closed.** The live Oracle Cloud deployment (`l2-gateway`, a `VM.Standard.E2.1.Micro` — one of the Always Free x86 shapes, 1 physical core with 2 logical/SMT siblings) originally reported queue-stage P99/P99.9 two orders of magnitude worse than the same binary on desktop, with large periodic spikes concentrated almost entirely in the queue stage. This was investigated properly rather than assumed — three plausible mechanisms were tested against real correlated data before anything was changed, and two led nowhere:
 
-- The shape reports as 1 physical core with 2 logical (SMT-style) siblings (`lscpu`/`nproc`) — there is no second physical core to give the producer and consumer threads their own, which is the whole premise this codebase's core-pinning scheme depends on (see `include/thread_utils.hpp`'s `HotCores` comment). `configure_hot_cores()` correctly detects this and now (see the `-1` sentinel fix) leaves the hot-path threads unpinned rather than pinning them to a logical-core index that doesn't exist on this machine — pinning was never actually doing anything useful here even before that fix, it was just failing silently.
-- `vmstat`'s `%st` (hypervisor steal) column sits at a **sustained ~31–37%** on this box, not an occasional spike — this is the host hypervisor taking a third of this guest's CPU time to run other tenants on the same physical hardware, continuously. No amount of in-guest thread affinity or scheduling policy can prevent this; it happens above the guest OS entirely.
-- A spin-polling consumer thread waiting on the SPSC ring is exactly the code path this kind of contention hits hardest: every time the hypervisor steals the physical core out from under it, the pop-side wait time (measured as the "queue" stage) balloons for however long that steal lasts. This is a real, honestly-measured number — the ring genuinely sat unpopped for that long — it just reflects host contention, not a queue design flaw.
+- **Hypervisor CPU steal**: real (`vmstat`'s `%st` sits at a sustained ~31–37% baseline on this box, sometimes higher), but a proper per-second correlation between `%steal` and actual queue-latency spikes across 215 seconds of live data — matched against exact spike timestamps recovered from the exported session, not guessed — came back at **Pearson r = 0.029**. Every one of the six largest observed spikes (30–54ms) occurred at 33.7–37.9% steal, i.e. baseline, not the 80–100% a direct causal spike would need. Steal is a real ambient tax on this shape; it is not what produces these specific spikes.
+- **Swap / memory pressure**: also ruled out. `si`/`so` were zero across every second checked, including every spike moment. (`mmap_writer.hpp`'s `mlock()` on the 610MB tick buffer does genuinely fail on this box from insufficient `RLIMIT_MEMLOCK` — now logged honestly instead of an unconditional "Pages locked" claim — but since nothing was actually swapping, that failure isn't the cause here either.)
+- **Disk I/O / writeback stalls**: ruled out the same way — `iostat -x` at the exact spike seconds showed `%util` under 1% and `await` in the single-digit milliseconds. The boot volume was never close to saturated.
+- **A competing guest process** (cron, logrotate, unattended-upgrades, journald, the Oracle Cloud agent): checked via per-second `ps` snapshots at every spike timestamp — no such process appeared, or spiked in CPU share, at any of them.
 
-This is treated as a known, documented limitation of the free-tier deployment rather than something to "fix" by tuning queue code (there is nothing wrong with the queue) or by resurrecting the Phase 5/8/9 host-jitter-canary attribution path (retired in v2.0.0 — see below — and would need to be rebuilt from scratch, including a wire-format change, to separate "real queue backlog" from "host stole the core" after the fact). If a future phase wants directly comparable numbers, the fix is a non-burstable/dedicated-core shape, not a code change here.
+**The actual mechanism**: ordinary CFS scheduler fairness on a single shared core, most likely between this process's own hot-path and cold-path threads (the gzip/export-drain thread, the relay-push Asio loop, and the coarse-book WS listeners all run continuously under plain `SCHED_OTHER`, contending with the spin-polling consumer thread for the one core) — invisible to per-process CPU monitoring, which reports one aggregated `%CPU` figure per PID regardless of which of its own threads is running. Confirmed by fixing it: granting the hot-path threads `SCHED_FIFO` real-time priority via the deployment's systemd unit (`CPUSchedulingPolicy=fifo`, `AmbientCapabilities=CAP_SYS_NICE` — letting the binary request real-time scheduling for itself without running as root) measured a **~9.3x reduction at P99** (45.2ms → 4.85ms) and a **~9.8x reduction at P99.9** (73.6ms → 7.48ms) on real live traffic, before/after, same box. Not a full fix — the observed max was still 47.5ms post-change, likely from rarer residual contention (equal-priority `SCHED_FIFO` threads of this same process don't time-slice against each other the way `SCHED_OTHER` does) — but the dominant mechanism behind the original queue-latency numbers was in-guest scheduler contention, not hypervisor steal, and it responds to an in-guest fix.
+
+Core-pinning itself (`configure_hot_cores()`) is correctly skipped on this shape rather than pinning to a logical-core index that doesn't exist (see `include/thread_utils.hpp`'s `-1` sentinel) — there genuinely is no second physical core to dedicate. The Phase 5/8/9 host-jitter-canary attribution path (retired in v2.0.0 — see below) was deliberately not resurrected to chase this: it would need a wire-format change to solve a problem that turned out to have a much cheaper, already-measured fix.
 
 ---
 
@@ -185,6 +188,20 @@ That same geometric-bucket algorithm is ported two more times — once into the 
 ### An earlier design choice that was later retired
 
 An earlier revision of this pipeline also ran a dedicated jitter-canary thread (`include/jitter_canary.hpp`) measuring ambient host-scheduler noise (`host_jitter_ns`), and attributed every tail-latency event to either that noise or a specific pipeline stage. `project-2-v2.0.0` retired this entirely: the gateway now measures only its own hot-path work (parse → queue → book-update → publish), not host scheduler behavior. See git history/tags if host-noise attribution is ever needed again.
+
+### Recommended systemd unit on a single-physical-core shape
+
+See [Known Limitations](#known-limitations) for the investigation this came out of. On a box with no spare physical core to pin to (confirmed via `configure_hot_cores()`'s own log line), granting the hot-path threads real-time scheduling measurably cuts queue-stage tail latency by an order of magnitude, by letting them preempt this same process's own cold-path threads (and anything else on the box) instead of waiting their turn under ordinary `SCHED_OTHER` fairness. Two lines in the unit, no elevated privileges needed at runtime:
+
+```ini
+[Service]
+...
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=50
+AmbientCapabilities=CAP_SYS_NICE
+```
+
+`CPUSchedulingPolicy`/`Priority` alone only sets the *process's* initial scheduling policy at exec time (systemd applies it before dropping privileges) — the binary's own per-thread `pthread_setschedparam()` calls (see `configure_self_high_performance()` in `include/thread_utils.hpp`) still need `AmbientCapabilities=CAP_SYS_NICE` to succeed for each hot-path thread individually; without it they silently stay on `SCHED_OTHER` (confirmed live — the difference is the whole effect).
 
 ### The full observability stack
 

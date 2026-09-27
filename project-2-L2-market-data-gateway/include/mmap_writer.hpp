@@ -55,24 +55,42 @@ private:
             ptr[i] = 0; 
         }
 
+        // Tracks whether the lock actually succeeded, so the final message
+        // below reports what really happened instead of unconditionally
+        // claiming "Pages locked" — confirmed live on a 1GB cloud box that
+        // mlock() genuinely fails here (ENOMEM, RLIMIT_MEMLOCK too low for
+        // this ~600MB region without CAP_IPC_LOCK/root), and the log was
+        // claiming success anyway. Pre-faulting (the touch loop above) still
+        // happens either way — only the "stays resident, can't be swapped
+        // out" guarantee depends on this succeeding.
+        bool locked = false;
 #ifdef _WIN32
         // Windows: Lock the virtual address space into physical RAM
-        if (!VirtualLock(mmapped_region_, file_size_bytes_)) {
-            std::cerr << "[WARNING] VirtualLock failed. Error: " << GetLastError() 
+        if (VirtualLock(mmapped_region_, file_size_bytes_)) {
+            locked = true;
+        } else {
+            std::cerr << "[WARNING] VirtualLock failed. Error: " << GetLastError()
                       << ". Ensure Process Working Set size is sufficient.\n";
         }
 #else
         // Linux: Lock memory to prevent swapping and set kernel hints
-        if (mlock(mmapped_region_, file_size_bytes_) != 0) {
+        if (mlock(mmapped_region_, file_size_bytes_) == 0) {
+            locked = true;
+        } else {
             std::perror("[WARNING] mlock failed (requires sudo or ulimit -l)");
         }
-        
+
         // Hint: Expect sequential access, kernel should read-ahead if needed
         madvise(mmapped_region_, file_size_bytes_, MADV_SEQUENTIAL);
         // Hint: This memory is important, don't drop it from the cache
         madvise(mmapped_region_, file_size_bytes_, MADV_WILLNEED);
 #endif
-        std::cout << "[MmapWriter] Warm-up complete. Pages locked.\n";
+        if (locked) {
+            std::cout << "[MmapWriter] Warm-up complete. Pages locked.\n";
+        } else {
+            std::cout << "[MmapWriter] Warm-up complete. Pages NOT locked (see WARNING "
+                         "above) — this region can be swapped out under memory pressure.\n";
+        }
     }
 
 public:
