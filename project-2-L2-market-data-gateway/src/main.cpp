@@ -17,12 +17,14 @@
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <unistd.h>
 #include <vector>
 #include <cerrno>
@@ -763,36 +765,86 @@ int main(int argc, char* argv[]) {
     // is just today's consumer — it only calls histogram.snapshot().
     LiveHistogram live_histogram;
 
-    // Live push to the relay's /ingest — see relay_push_client.hpp. Env-var
-    // configured (not argv) so this doesn't disturb the existing
-    // `L2DataCapture <minutes> <symbol>` calling convention, and so the
-    // same binary can point at a different relay/port per instrument (see
-    // relay/scripts/rotate-live-capture.sh, which sets RELAY_WS_PORT per
-    // symbol). Constructed unconditionally with a localhost:8080 default —
-    // matching every other local-dev default in this repo (fake-gateway.mjs,
-    // replay-gateway.mjs) — so the common single-instrument case needs zero
-    // extra configuration. If the relay isn't reachable, this just
-    // reconnect-backs-off forever in the background, same as
-    // HyperliquidAdapter does against Hyperliquid — never fatal.
+    // Live push to the relay's /ingest — see relay_push_client.hpp. Two ways
+    // to configure it, flags winning when both are given:
+    //   --relay-url <ws://host:port|host:port>, --relay-token <token>
+    //     Interactive/dev-loop convenience — argv, not env.
+    //   RELAY_WS_HOST / RELAY_WS_PORT / INGEST_TOKEN
+    //     What a systemd unit's Environment= lines want (matches how
+    //     relay/README.md configures the relay itself the same way), and
+    //     still what relay/scripts/rotate-live-capture.sh uses to point the
+    //     same binary at a different relay/port per instrument.
+    // If NEITHER says anything about the relay at all, RelayPushClient is
+    // not constructed. Defaulting to localhost:8080 when nothing was
+    // configured used to be this function's behavior -- a silent wrong
+    // guess (nobody runs the gateway locally with a relay happening to
+    // listen on that exact port), not a sensible fallback. "Omitted" now
+    // actually means "no relay client", not "guess localhost".
     auto env_or = [](const char* name, const std::string& fallback) -> std::string {
         const char* v = std::getenv(name);
         return v ? std::string(v) : fallback;
     };
-    std::string relay_host = env_or("RELAY_WS_HOST", "localhost");
-    std::string relay_port = env_or("RELAY_WS_PORT", "8080");
-    std::optional<std::string> relay_token;
-    if (const char* t = std::getenv("INGEST_TOKEN")) relay_token = std::string(t);
 
-    // Heap-allocated, not a main()-stack local: RelayPushClient's internal
-    // ring buffer is ~6.6MB (see relay_push_client.hpp), the same "too big
-    // for a stack" reasoning export_ring above and OrderBook elsewhere in
-    // this codebase already follow. A stack-local version of this crashed
-    // with STATUS_STACK_OVERFLOW immediately on startup — confirmed, not
-    // theoretical.
-    auto relay_push = std::make_unique<RelayPushClient>(relay_host, relay_port, host_ghz, relay_token);
+    std::string relay_url_flag;
+    std::string relay_token_flag;
+    for (int i = 3; i < argc; ++i) {
+        std::string arg = argv[i];
+        if (arg == "--relay-url" && i + 1 < argc) {
+            relay_url_flag = argv[++i];
+        } else if (arg == "--relay-token" && i + 1 < argc) {
+            relay_token_flag = argv[++i];
+        }
+    }
+
+    // Accepts a bare "host:port" or "ws://host:port[/path]" (scheme and any
+    // trailing path stripped) so pasting the same address style this project
+    // already uses elsewhere for relay URLs just works.
+    auto parse_relay_url = [](const std::string& url) -> std::pair<std::string, std::string> {
+        std::string s = url;
+        auto scheme_pos = s.find("://");
+        if (scheme_pos != std::string::npos) s = s.substr(scheme_pos + 3);
+        auto slash_pos = s.find('/');
+        if (slash_pos != std::string::npos) s = s.substr(0, slash_pos);
+        auto colon_pos = s.rfind(':');
+        if (colon_pos == std::string::npos) return {s, "8080"};
+        return {s.substr(0, colon_pos), s.substr(colon_pos + 1)};
+    };
+
+    const char* env_relay_host = std::getenv("RELAY_WS_HOST");
+    const char* env_relay_port = std::getenv("RELAY_WS_PORT");
+    const bool relay_configured = !relay_url_flag.empty() || env_relay_host || env_relay_port;
+
+    std::unique_ptr<RelayPushClient> relay_push;
+    if (relay_configured) {
+        std::string relay_host, relay_port;
+        if (!relay_url_flag.empty()) {
+            std::tie(relay_host, relay_port) = parse_relay_url(relay_url_flag);
+        } else {
+            relay_host = env_or("RELAY_WS_HOST", "localhost");
+            relay_port = env_or("RELAY_WS_PORT", "8080");
+        }
+
+        std::optional<std::string> relay_token;
+        if (!relay_token_flag.empty()) relay_token = relay_token_flag;
+        else if (const char* t = std::getenv("INGEST_TOKEN")) relay_token = std::string(t);
+
+        // Heap-allocated, not a main()-stack local: RelayPushClient's internal
+        // ring buffer is ~6.6MB (see relay_push_client.hpp), the same "too big
+        // for a stack" reasoning export_ring above and OrderBook elsewhere in
+        // this codebase already follow. A stack-local version of this crashed
+        // with STATUS_STACK_OVERFLOW immediately on startup — confirmed, not
+        // theoretical.
+        relay_push = std::make_unique<RelayPushClient>(relay_host, relay_port, host_ghz, relay_token);
+        std::cout << "[main] relay push -> ws://" << relay_host << ":" << relay_port << "/ingest\n";
+    } else {
+        std::cout << "[main] relay push disabled (no --relay-url/--relay-token or "
+                     "RELAY_WS_HOST/RELAY_WS_PORT/INGEST_TOKEN set)\n";
+    }
 
     ColdPathExporter exporter(*export_ring, host_ghz, live_histogram, "data/export",
-        [rp = relay_push.get()](const ExportRecord& rec) { rp->push(rec); });
+        relay_push ? std::function<void(const ExportRecord&)>(
+                         [rp = relay_push.get()](const ExportRecord& rec) { rp->push(rec); })
+                   : nullptr);
     TerminalProgressView progress_view(live_histogram);
 
     // Spawn threads. Pinning happens inside each lambda via pin_thread_self()
