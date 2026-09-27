@@ -100,6 +100,17 @@ export interface HelloMessage {
   type: "hello";
   cpu_ghz: number;
   token?: string;
+  // Set only by a replay-gateway.mjs connection (a real captured session
+  // looped against /ingest, not a live gateway) -- epoch ms of the
+  // ORIGINAL capture's start, taken directly from that session's own
+  // "session_<epoch_ms>.ndjson.gz" filename, never "now" (a looping replay
+  // reconnects/re-sends this same hello on every lap; "now" would silently
+  // relabel a real historical capture as freshly live on every loop).
+  capturedAt?: number;
+  // Explicit, not inferred from the presence of capturedAt or anything
+  // else -- a future real-live gateway reconnecting should never need
+  // special-casing here just because it happens to share some other field.
+  isReplay?: boolean;
 }
 
 export function isIngestRecord(value: unknown): value is IngestRecord {

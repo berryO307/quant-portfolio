@@ -38,6 +38,8 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
   private heartbeatTimer: NodeJS.Timeout | null = null;
   private missedPongs = 0;
   private lastCpuGhz = DEFAULT_CPU_GHZ;
+  private lastCapturedAt: number | undefined;
+  private lastIsReplay = false;
 
   // ingestToken: when set (INGEST_TOKEN env var in production — see
   // relay/README.md), a connecting client must prove it knows this value in
@@ -55,6 +57,14 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
 
   cpuGhz(): number {
     return this.lastCpuGhz;
+  }
+
+  capturedAt(): number | undefined {
+    return this.lastCapturedAt;
+  }
+
+  isReplay(): boolean {
+    return this.lastIsReplay;
   }
 
   handleConnection(ws: WebSocket): void {
@@ -87,7 +97,9 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
 
       this.promote(ws);
       this.lastCpuGhz = parsed.cpu_ghz;
-      this.emit("connected", { cpuGhz: this.lastCpuGhz });
+      this.lastCapturedAt = parsed.capturedAt;
+      this.lastIsReplay = parsed.isReplay ?? false;
+      this.emit("connected", { cpuGhz: this.lastCpuGhz, capturedAt: this.lastCapturedAt, isReplay: this.lastIsReplay });
 
       ws.on("message", (data2) => this.handleMessage(data2));
       // "close" always follows "error" for a ws connection, so relying on
@@ -122,7 +134,9 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
 
     if (isHelloMessage(parsed)) {
       this.lastCpuGhz = parsed.cpu_ghz;
-      this.emit("connected", { cpuGhz: this.lastCpuGhz });
+      this.lastCapturedAt = parsed.capturedAt;
+      this.lastIsReplay = parsed.isReplay ?? false;
+      this.emit("connected", { cpuGhz: this.lastCpuGhz, capturedAt: this.lastCapturedAt, isReplay: this.lastIsReplay });
       return;
     }
 

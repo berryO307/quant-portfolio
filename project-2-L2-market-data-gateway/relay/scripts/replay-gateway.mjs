@@ -23,6 +23,7 @@ import WebSocket from "ws";
 import { createReadStream } from "node:fs";
 import { createGunzip } from "node:zlib";
 import { createInterface } from "node:readline";
+import { basename } from "node:path";
 
 const args = process.argv.slice(2);
 const LOOP = args.includes("--loop");
@@ -39,6 +40,19 @@ const PORT = Number(portArg ?? process.env.PORT ?? 8080);
 // not an oversight.
 const CPU_GHZ = Number(cpuGhzArg ?? process.env.CPU_GHZ ?? 3.8);
 const INGEST_TOKEN = process.env.INGEST_TOKEN;
+// The ORIGINAL capture's start time, not "now" -- ColdPathExporter names
+// this file "session_<epoch_ms>.ndjson.gz" at export start (see
+// export_pipeline.hpp), so the filename itself already carries exactly the
+// timestamp a replay needs to honestly disclose. Falls back to null (sent
+// as capturedAt: undefined) rather than guessing if a file was renamed.
+const filenameMatch = /session_(\d+)\.ndjson\.gz$/.exec(basename(filePath));
+const CAPTURED_AT_MS = filenameMatch ? Number(filenameMatch[1]) : null;
+if (CAPTURED_AT_MS == null) {
+  console.warn(
+    `[replay-gateway] WARNING: couldn't parse a capture timestamp from "${basename(filePath)}" ` +
+      `(expected session_<epoch_ms>.ndjson.gz) — hello will omit capturedAt, frontend replay banner won't show a date.`
+  );
+}
 // Any single inter-record gap longer than this is capped, not honored —
 // otherwise a real pause in the original capture (e.g. sitting idle for a
 // stretch before the book first seeded) would stall the whole replay for
@@ -89,6 +103,8 @@ async function main() {
       JSON.stringify({
         type: "hello",
         cpu_ghz: CPU_GHZ,
+        isReplay: true,
+        ...(CAPTURED_AT_MS != null ? { capturedAt: CAPTURED_AT_MS } : {}),
         ...(INGEST_TOKEN ? { token: INGEST_TOKEN } : {}),
       })
     );

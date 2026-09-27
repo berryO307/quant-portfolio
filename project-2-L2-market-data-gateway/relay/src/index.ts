@@ -72,7 +72,17 @@ httpServer.on("upgrade", (req, socket, head) => {
       // SampleRecord's raw TSC fields into ns (see the hello handshake
       // contract in types.ts) — send it directly rather than making the
       // client wait for the next upstream gateway (re)connection.
-      ws.send(JSON.stringify({ type: "hello", cpu_ghz: ingestClient.cpuGhz() }));
+      // capturedAt/isReplay ride along the same message so a client that
+      // connects mid-replay-session immediately knows it's watching a
+      // replay, not just clients present at the original "connected" event.
+      ws.send(
+        JSON.stringify({
+          type: "hello",
+          cpu_ghz: ingestClient.cpuGhz(),
+          capturedAt: ingestClient.capturedAt(),
+          isReplay: ingestClient.isReplay(),
+        })
+      );
     });
     return;
   }
@@ -82,9 +92,10 @@ httpServer.on("upgrade", (req, socket, head) => {
 
 // Rebroadcast the hello handshake to every browser client whenever the
 // upstream gateway (re)connects, so clients already open pick up a changed
-// cpu_ghz too, not just newly-connecting ones (handled above).
-ingestClient.on("connected", ({ cpuGhz }) => {
-  connections.broadcast(JSON.stringify({ type: "hello", cpu_ghz: cpuGhz }));
+// cpu_ghz (or a replay session starting/looping) too, not just newly-
+// connecting ones (handled above).
+ingestClient.on("connected", ({ cpuGhz, capturedAt, isReplay }) => {
+  connections.broadcast(JSON.stringify({ type: "hello", cpu_ghz: cpuGhz, capturedAt, isReplay }));
 });
 
 // Push the rolling/session stats snapshot to browser clients on the same

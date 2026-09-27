@@ -7,7 +7,7 @@ import type { IngestRecord } from "./types.js";
 // either consumer.
 export interface DataSourceEvents {
   record: (record: IngestRecord) => void;
-  connected: (info: { cpuGhz: number }) => void;
+  connected: (info: { cpuGhz: number; capturedAt?: number; isReplay?: boolean }) => void;
   disconnected: () => void;
 }
 
@@ -16,6 +16,11 @@ export interface DataSource {
   /** Calibrated TSC frequency from the current (or most recent) connection's
    * hello handshake — see HelloMessage in types.ts. */
   cpuGhz(): number;
+  /** Original capture start (epoch ms) and replay flag from the current (or
+   * most recent) connection's hello — undefined/false for a real live
+   * gateway, set by replay-gateway.mjs. See HelloMessage in types.ts. */
+  capturedAt(): number | undefined;
+  isReplay(): boolean;
   on<K extends keyof DataSourceEvents>(event: K, listener: DataSourceEvents[K]): void;
   off<K extends keyof DataSourceEvents>(event: K, listener: DataSourceEvents[K]): void;
 }
