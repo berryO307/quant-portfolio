@@ -79,6 +79,40 @@ Oracle Cloud's Always Free tier includes an ARM-based Ampere A1 VM (up to 4 OCPU
    WantedBy=multi-user.target
    ```
    Then `sudo systemctl enable --now l2-relay`.
+5a. **Replay mode**, if you're not running a live gateway against this relay
+   (see the root [`README.md`](../README.md#known-limitations) and
+   [`BUGS.md`](../BUGS.md) for why this project currently does this in
+   production): `scripts/replay-gateway.mjs` connects to this relay's own
+   `/ingest` endpoint like a real gateway would, replaying a captured
+   `.ndjson.gz` session at real-time pace instead of live data. It parses
+   the original capture's start time directly out of the session's own
+   `session_<epoch_ms>.ndjson.gz` filename and sends it as `capturedAt` in
+   the `hello` handshake, along with `isReplay: true` — both are what drive
+   the web viewer's replay disclosure bar (`ReplayIndicator.tsx`). Example
+   unit file at `/etc/systemd/system/replay.service`, run on the SAME host
+   as `l2-relay` (the script's target is hardcoded to `localhost`) and only
+   ever instead of a live gateway, never alongside one:
+   ```ini
+   [Unit]
+   Description=Replay a real captured L2 session to l2-relay's own /ingest, looped
+   After=network.target l2-relay.service
+   Requires=l2-relay.service
+
+   [Service]
+   Type=simple
+   User=ubuntu
+   WorkingDirectory=/home/ubuntu/quant-command-center/project-2-L2-market-data-gateway/relay
+   ExecStart=/usr/bin/node scripts/replay-gateway.mjs /home/ubuntu/replay-data/session_<epoch_ms>.ndjson.gz 8080 <cpu_ghz> --loop
+   Restart=on-failure
+   RestartSec=5
+   Environment=INGEST_TOKEN=<the same value l2-relay.service uses>
+
+   [Install]
+   WantedBy=multi-user.target
+   ```
+   Then `sudo systemctl enable --now replay`. If a live gateway (`l2-gateway`
+   or similar) is already connected when this starts, stop it first —
+   `/ingest` is meant for one upstream connection at a time.
 6. **TLS.** The web viewer needs `wss://`/`https://`, not `ws://`/`http://`, once it's deployed on Vercel (mixed content is blocked by browsers). Put this relay behind a reverse proxy (Caddy is the simplest option — it handles Let's Encrypt certificates automatically) or a load balancer that terminates TLS, rather than trying to serve TLS from Node directly.
 7. **Point the web app at it** — set `NEXT_PUBLIC_RELAY_WS_URL=wss://your-domain/live` and `NEXT_PUBLIC_RELAY_HEALTH_URL=https://your-domain/health` in the Vercel project (see [`web/README.md`](../web/README.md)).
 
