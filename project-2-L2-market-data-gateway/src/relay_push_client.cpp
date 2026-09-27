@@ -48,6 +48,10 @@ void RelayPushClient::run() {
     // reconnect. Previously unpinned, so the OS could schedule it onto the
     // hot-path/canary cores — see thread_utils.hpp's pin_thread_off_hot_cores.
     pin_thread_off_hot_cores("relay_push");
+    // Real-time priority (not core pinning) — tested explicitly as part of
+    // the middle-ground SCHED_FIFO scope: see README's Known Limitations
+    // section for the measured before/after numbers this is based on.
+    request_realtime_priority("relay_push");
 
     auto delay = RECONNECT_BASE_DELAY;
 

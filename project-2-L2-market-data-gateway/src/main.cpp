@@ -609,43 +609,29 @@ int main(int argc, char* argv[]) {
     // Linux has no process-wide priority class — scheduling policy
     // (SCHED_FIFO/SCHED_RR vs. the default SCHED_OTHER) is per-THREAD, not
     // per-process, which is a real architectural difference from Windows'
-    // PriorityClass, not just a naming difference. This call covers the
-    // main thread itself; the producer/consumer threads each set
-    // their own policy in thread_utils.hpp's configure_self_high_performance()
-    // and pin_thread_self(), which now do the same achieved-vs-requested
-    // check (see that file).
+    // PriorityClass, not just a naming difference. The producer/consumer
+    // threads each set their own policy from INSIDE their own thread body,
+    // in thread_utils.hpp's configure_self_high_performance() — that is
+    // the only place SCHED_FIFO is requested on Linux now.
     //
-    // Same discipline as the Windows branch: sched_setscheduler's return
-    // value alone only means "didn't error" — an unprivileged caller
-    // lacking CAP_SYS_NICE gets EPERM and the policy silently stays
-    // SCHED_OTHER, so this re-queries via sched_getscheduler() rather than
-    // trusting the call succeeded just because errno wasn't set.
-    {
-        sched_param param{};
-        param.sched_priority = sched_get_priority_max(SCHED_FIFO);
-        if (sched_setscheduler(0, SCHED_FIFO, &param) != 0) {
-            std::cerr << "[main] WARNING: sched_setscheduler(SCHED_FIFO) failed: "
-                      << std::strerror(errno) << " (errno=" << errno << "). "
-                         "Requires CAP_SYS_NICE — run with sudo, or grant the capability "
-                         "directly: sudo setcap cap_sys_nice=eip <binary>.\n";
-        }
-        int achieved_policy = sched_getscheduler(0);
-        if (achieved_policy != SCHED_FIFO) {
-            const char* policy_name =
-                achieved_policy == SCHED_OTHER ? "SCHED_OTHER" :
-                achieved_policy == SCHED_RR    ? "SCHED_RR"    :
-                achieved_policy == SCHED_BATCH ? "SCHED_BATCH" :
-                achieved_policy == SCHED_IDLE  ? "SCHED_IDLE"  :
-                achieved_policy < 0            ? "unknown (sched_getscheduler failed)" :
-                "other";
-            std::cerr << "[main] WARNING: requested SCHED_FIFO but the main thread is "
-                         "actually running under " << policy_name << " (policy=" << achieved_policy
-                      << "). Without CAP_SYS_NICE, Linux silently leaves the default "
-                         "time-shared scheduler in place instead of granting real-time "
-                         "scheduling — this is the direct Linux analogue of the Windows "
-                         "RealTime->High downgrade found in round 8's Fix 3.\n";
-        }
-    }
+    // This used to ALSO elevate the main thread itself here, before any
+    // hot-path thread was spawned, on the theory that it was the Linux
+    // analogue of the Windows branch above. Confirmed live on l2-gateway
+    // (Oracle Cloud, AmbientCapabilities=CAP_SYS_NICE granted via systemd)
+    // that this was actively harmful, not merely redundant: sched_setscheduler(0, ...)
+    // affects the CALLING thread despite the "pid" name — i.e. main — and
+    // every thread spawned via std::thread afterward inherits its creating
+    // thread's scheduling policy by default (PTHREAD_INHERIT_SCHED). With
+    // main elevated first, EVERY subsequently-spawned thread came up
+    // SCHED_FIFO too, including the cold-path ones (gzip/export drain,
+    // relay-push's Asio loop, coarse-book listeners) that never asked for
+    // it and don't need it — confirmed via `ps -T`, all 10 threads showing
+    // SCHED_FIFO instead of just the 3 intended hot-path ones. The main
+    // thread itself does no latency-critical work after spawning (it just
+    // orchestrates startup/shutdown), so eliminating this call costs
+    // nothing and removes the unintended propagation at the source, rather
+    // than trying to claw cold-path threads back down to SCHED_OTHER
+    // individually after the fact.
     #endif
 
     // std::signal used intentionally for brevity; production POSIX code should use sigaction() because

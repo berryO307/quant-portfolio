@@ -73,6 +73,47 @@ inline HotCores& hot_cores() {
 // On Linux, uses pthread_setaffinity_np on the calling thread's handle.
 
 // Internal configuration: Thread sets its own affinity and priority
+// Requests real-time scheduling priority for the CALLING thread only —
+// independent of core affinity entirely (see configure_self_high_performance's
+// own comment on why those are separate decisions). Factored out so a
+// cold-path thread that doesn't want/need pinning (and must stay OFF the
+// hot cores via pin_thread_off_hot_cores) can still opt into winning
+// scheduling contention against ordinary SCHED_OTHER work on a shared core,
+// without duplicating this logic at each call site.
+//
+// Deliberately NOT applied to every cold-path thread by default: on a
+// single-physical-core box, ws_coarse_thread_N (idle 99% of the time,
+// only matters for wide price-bucket views) and TerminalProgressView
+// (a once-a-second console write) gain nothing from real-time priority
+// and would just be two more FIFO-class threads a busy hot-path thread
+// has to share the runqueue with. Call this explicitly, per thread, only
+// where it was actually measured to help — see README's Known
+// Limitations section for the live before/after numbers this is based on.
+inline void request_realtime_priority(const std::string& name) {
+#ifdef _WIN32
+    if (!SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL)) {
+        std::cerr << "   [!] Failed Priority for '" << name << "'. Error: " << GetLastError() << "\n";
+    }
+#else
+    sched_param sch_params{};
+    sch_params.sched_priority = sched_get_priority_max(SCHED_FIFO);
+    int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch_params);
+    if (rc != 0) {
+        std::cerr << "   [!] pthread_setschedparam(SCHED_FIFO) failed for '" << name
+                  << "': " << std::strerror(rc) << " (rc=" << rc << "). Requires "
+                     "CAP_SYS_NICE — run with sudo, or: sudo setcap cap_sys_nice=eip <binary>.\n";
+    }
+    int achieved_policy = 0;
+    sched_param achieved_param{};
+    pthread_getschedparam(pthread_self(), &achieved_policy, &achieved_param);
+    if (achieved_policy != SCHED_FIFO) {
+        std::cerr << "   [!] '" << name << "' requested SCHED_FIFO but is actually running "
+                     "under policy=" << achieved_policy << " (SCHED_OTHER=" << SCHED_OTHER
+                  << ") — real-time scheduling was not granted.\n";
+    }
+#endif
+}
+
 inline void configure_self_high_performance(int core_id, const std::string& name) {
     // core_id < 0 is configure_hot_cores()'s sentinel for "no distinct
     // physical core was available to claim" (see its own fallback branch) —
@@ -107,18 +148,13 @@ inline void configure_self_high_performance(int core_id, const std::string& name
                      "whichever core it lands on.\n";
     }
 #ifdef _WIN32
-    HANDLE hThread = GetCurrentThread();
     if (have_core) {
-        // 1. Set Affinity for the calling thread
+        // Set Affinity for the calling thread
+        HANDLE hThread = GetCurrentThread();
         DWORD_PTR mask = (static_cast<DWORD_PTR>(1) << core_id);
         if (!SetThreadAffinityMask(hThread, mask)) {
             std::cerr << "   [!] Failed Affinity. Error: " << GetLastError() << "\n";
         }
-    }
-
-    // 2. Set Priority to Time Critical — independent of affinity, see above.
-    if (!SetThreadPriority(hThread, THREAD_PRIORITY_TIME_CRITICAL)) {
-        std::cerr << "   [!] Failed Priority. Error: " << GetLastError() << "\n";
     }
 #else
     // Linux Implementation
@@ -141,31 +177,11 @@ inline void configure_self_high_performance(int core_id, const std::string& name
                       << core_id << " (rc=" << affinity_rc << ") — thread will float freely\n";
         }
     }
-
-    // SCHED_FIFO requires CAP_SYS_NICE — an unprivileged caller gets EPERM
-    // (pthread_setschedparam returns the errno value directly, doesn't set
-    // the global errno) and this thread silently stays on the default
-    // SCHED_OTHER. Previously unchecked. Re-queried via
-    // pthread_getschedparam rather than trusting a non-EPERM return alone,
-    // same "confirm what was achieved" discipline as main()'s process-level
-    // check.
-    sched_param sch_params{};
-    sch_params.sched_priority = sched_get_priority_max(SCHED_FIFO);
-    int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sch_params);
-    if (rc != 0) {
-        std::cerr << "   [!] pthread_setschedparam(SCHED_FIFO) failed for '" << name
-                  << "': " << std::strerror(rc) << " (rc=" << rc << "). Requires "
-                     "CAP_SYS_NICE — run with sudo, or: sudo setcap cap_sys_nice=eip <binary>.\n";
-    }
-    int achieved_policy = 0;
-    sched_param achieved_param{};
-    pthread_getschedparam(pthread_self(), &achieved_policy, &achieved_param);
-    if (achieved_policy != SCHED_FIFO) {
-        std::cerr << "   [!] '" << name << "' requested SCHED_FIFO but is actually running "
-                     "under policy=" << achieved_policy << " (SCHED_OTHER=" << SCHED_OTHER
-                  << ") — real-time scheduling was not granted.\n";
-    }
 #endif
+    // Priority is independent of affinity — see this function's own
+    // comment above — and shared with cold-path threads that opt in
+    // explicitly (export_drain, relay_push) via the same helper.
+    request_realtime_priority(name);
 }
 
 // Claims a core triple for this process, so two instances never share one.
