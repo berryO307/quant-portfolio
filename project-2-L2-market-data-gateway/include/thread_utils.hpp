@@ -74,6 +74,25 @@ inline HotCores& hot_cores() {
 
 // Internal configuration: Thread sets its own affinity and priority
 inline void configure_self_high_performance(int core_id, const std::string& name) {
+    // core_id < 0 is configure_hot_cores()'s sentinel for "no distinct
+    // physical core was available to claim" (see its own fallback branch) —
+    // deliberately NOT attempting to pin to a stale/guessed index here.
+    // Confirmed live on Oracle's E2.1.Micro (1 physical/2 logical core):
+    // the old unconditional fallback left producer/consumer at HotCores{}'s
+    // default-constructed 2/3, which don't exist on a 2-logical-CPU box —
+    // pthread_setaffinity_np there returns EINVAL, and since its return
+    // value was never checked (see below), that failure was completely
+    // silent: no log line, thread left unpinned by accident rather than by
+    // design. Skipping the attempt outright, once there's no real core to
+    // dedicate, is strictly better than an invalid pin that does nothing
+    // anyway (see this file's own HotCores comment on why two threads
+    // forced onto one core is worse than neither being pinned).
+    if (core_id < 0) {
+        std::cout << "[thread] '" << name << "' — no distinct physical core available "
+                     "(see [cores] warning above); running unpinned, no real-time "
+                     "priority requested either.\n";
+        return;
+    }
     std::cout << "[thread] Configuring " << name << " on Core " << core_id << "...\n";
 #ifdef _WIN32
     // 1. Set Affinity for the calling thread
@@ -92,7 +111,19 @@ inline void configure_self_high_performance(int core_id, const std::string& name
     cpu_set_t cpuset;
     CPU_ZERO(&cpuset);
     CPU_SET(core_id, &cpuset);
-    pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    // Return value previously discarded entirely — a failed pin (e.g.
+    // core_id pointing at a logical CPU that doesn't exist on this machine)
+    // was completely silent: no warning, thread just left running on
+    // whatever core the OS happened to schedule it on, indistinguishable
+    // from a successful pin in every log this process produces. pin_thread_
+    // self() (used for cold-path threads) already checked and logged this;
+    // this call site — the one actually used for the hot-path producer/
+    // consumer threads — did not. Matching that same diagnostic here.
+    int affinity_rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &cpuset);
+    if (affinity_rc != 0) {
+        std::cerr << "   [!] pthread_setaffinity_np failed for '" << name << "' on core "
+                  << core_id << " (rc=" << affinity_rc << ") — thread will float freely\n";
+    }
 
     // SCHED_FIFO requires CAP_SYS_NICE — an unprivileged caller gets EPERM
     // (pthread_setschedparam returns the errno value directly, doesn't set
@@ -303,11 +334,27 @@ inline void configure_hot_cores() {
         return;
     }
 
+    // No physical core left to claim (e.g. a 1-physical/N-logical machine —
+    // Oracle's Always Free E2.1.Micro shape confirmed live — where the loop
+    // above can't execute even once from base=1). Previously this fell
+    // through leaving hot_cores() at HotCores{}'s default-constructed 2/3 —
+    // indices that don't exist at all on a 2-logical-CPU machine, so every
+    // configure_self_high_performance() call using them silently failed to
+    // pin (see that function's own comment). An explicit sentinel (-1) so
+    // callers skip pinning outright instead of attempting one that can't
+    // possibly succeed: three threads (producer/consumer/whatever else
+    // shares this single real core) genuinely fighting each other AND the
+    // hypervisor for it is what this measures either way, pinned or not —
+    // see this file's own HotCores comment on why forcing them onto one
+    // core by an invalid pin is worse than leaving them to float.
     std::cerr << "[cores] WARNING: no free physical core from base " << base
-              << " on a " << n << "-physical/" << hw << "-logical machine — falling back to "
-              << hot_cores().producer << "/" << hot_cores().consumer << ". Another instance "
-                 "may already hold these, in which case both will time-slice against each "
-                 "other and queue-wait will show multi-millisecond spikes.\n";
+              << " on a " << n << "-physical/" << hw << "-logical machine — not enough "
+                 "distinct physical cores to give the hot-path threads their own. Leaving "
+                 "them unpinned rather than pinning to indices that may not exist on this "
+                 "machine. On a shared/burstable cloud shape (e.g. Oracle's Always Free "
+                 "E2.1.Micro) this is an expected hardware limitation, not a bug — see "
+                 "README's Known Limitations section.\n";
+    hot_cores() = HotCores{-1, -1, {}};
 }
 
 // Called from INSIDE a COLD-path thread (export drain, relay push, progress

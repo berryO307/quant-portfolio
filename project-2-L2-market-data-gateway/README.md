@@ -69,6 +69,18 @@ The queue itself is institutional-grade — a 0.4 µs median and 7.4 µs p99 acr
 
 ---
 
+## Known Limitations
+
+**Free-tier cloud latency numbers are not comparable to the desktop numbers above.** The live Oracle Cloud deployment (`l2-gateway`, a `VM.Standard.E2.1.Micro` — one of the Always Free x86 shapes) reports queue-stage P99/P99.9/MAX an order of magnitude worse than the same binary on a dedicated desktop, with large periodic spikes concentrated almost entirely in the queue stage rather than parse/book-update/publish. Confirmed root cause, not a logic bug:
+
+- The shape reports as 1 physical core with 2 logical (SMT-style) siblings (`lscpu`/`nproc`) — there is no second physical core to give the producer and consumer threads their own, which is the whole premise this codebase's core-pinning scheme depends on (see `include/thread_utils.hpp`'s `HotCores` comment). `configure_hot_cores()` correctly detects this and now (see the `-1` sentinel fix) leaves the hot-path threads unpinned rather than pinning them to a logical-core index that doesn't exist on this machine — pinning was never actually doing anything useful here even before that fix, it was just failing silently.
+- `vmstat`'s `%st` (hypervisor steal) column sits at a **sustained ~31–37%** on this box, not an occasional spike — this is the host hypervisor taking a third of this guest's CPU time to run other tenants on the same physical hardware, continuously. No amount of in-guest thread affinity or scheduling policy can prevent this; it happens above the guest OS entirely.
+- A spin-polling consumer thread waiting on the SPSC ring is exactly the code path this kind of contention hits hardest: every time the hypervisor steals the physical core out from under it, the pop-side wait time (measured as the "queue" stage) balloons for however long that steal lasts. This is a real, honestly-measured number — the ring genuinely sat unpopped for that long — it just reflects host contention, not a queue design flaw.
+
+This is treated as a known, documented limitation of the free-tier deployment rather than something to "fix" by tuning queue code (there is nothing wrong with the queue) or by resurrecting the Phase 5/8/9 host-jitter-canary attribution path (retired in v2.0.0 — see below — and would need to be rebuilt from scratch, including a wire-format change, to separate "real queue backlog" from "host stole the core" after the fact). If a future phase wants directly comparable numbers, the fix is a non-burstable/dedicated-core shape, not a code change here.
+
+---
+
 ## Visual Analysis
 
 The web viewer's Latency Panel shows the system's real behaviour live — sourced directly from the relay's own rolling aggregator (10-second buckets, up to 1 hour of retention), the same live connection driving the order book and trades tape. Nothing here is a static image or a separately-run notebook; select a shorter window (5 minutes / 15 minutes / 1 hour) and the charts redraw from the same live stream, not a recomputation.
