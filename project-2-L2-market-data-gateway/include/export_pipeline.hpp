@@ -342,6 +342,11 @@ private:
         // work. It was previously unpinned, so the OS was free to schedule
         // it onto the producer/consumer/canary cores. Keep it off them.
         pin_thread_off_hot_cores("export_drain");
+        // Real-time priority (not core pinning) — tested explicitly as part
+        // of the middle-ground SCHED_FIFO scope: see README's Known
+        // Limitations section for the measured before/after numbers this is
+        // based on. Independent of pin_thread_off_hot_cores() above.
+        request_realtime_priority("export_drain");
         ExportRecord rec;
         while (running_.load(std::memory_order_acquire)) {
             bool got_any = false;
