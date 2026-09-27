@@ -15,18 +15,26 @@ import type { Attribution, StageNs } from "./types";
 // construction. Import from here instead so a future palette change only
 // touches one file.
 
-// ── Neutrals + accent (from the tweakcn theme's dark-mode tokens) ──────────
-export const COLOR_BG = "#020817"; // --background
-export const COLOR_PANEL_BG = "#0a1424"; // derived mid-tier: the theme has no
-// distinct "card" tone (--card equals --background exactly) — this app still
-// needs a subtle tint for header strips/dividers/stat boxes that reads as
-// "slightly raised" without introducing a shadow or a border-toned fill.
+// ── Neutrals + accent (from the current theme's dark-mode tokens) ──────────
+// Recomputed for the shadcn "neutral gray" theme swap (globals.css) —
+// accurately converted from that theme's oklch(L 0 0) dark values, not
+// eyeballed. NOTE: as of this pass, nothing in web/src actually imports
+// this module (grepped every "from '@/lib/theme'"-style import — zero
+// hits); chartTheme.ts's header comment mentions this file, but that's a
+// comment, not an import. Updated anyway per the theme-swap follow-up
+// rather than left silently stale, but this specific change has no visible
+// effect until/unless something imports it.
+export const COLOR_BG = "#171717"; // --background
+export const COLOR_PANEL_BG = "#0e0e0e"; // --card — now genuinely distinct
+// from --background in this theme (unlike the old one this comment used to
+// describe), so this can track --card directly instead of being an
+// independently-derived tint.
 export const COLOR_GRID = "#111b2a"; // derived, subtler than COLOR_BORDER — uPlot gridlines only
-export const COLOR_BORDER = "#1e293b"; // --border / --secondary / --muted / --accent (all equal in this theme)
-export const COLOR_MUTED = "#94a3b8"; // --muted-foreground
-export const COLOR_TEXT = "#cbd5e1"; // between muted and bright — regular readable values (ladder/tape numbers)
-export const COLOR_TEXT_BRIGHT = "#f8fafc"; // --foreground
-export const COLOR_ACCENT = "#3b82f6"; // --primary — the one sparing UI accent (active tab, focus, mode toggle)
+export const COLOR_BORDER = "#262626"; // --border / --secondary / --muted (all equal in this theme; --accent is close but not identical)
+export const COLOR_MUTED = "#a1a1a1"; // --muted-foreground
+export const COLOR_TEXT = "#cecece"; // between muted and bright — regular readable values (ladder/tape numbers)
+export const COLOR_TEXT_BRIGHT = "#fafafa"; // --foreground
+export const COLOR_ACCENT = "#e5e5e5"; // --primary — the one sparing UI accent (active tab, focus, mode toggle)
 
 // ── Domain colors (not from the theme — project-specific, unchanged) ───────
 export const COLOR_BID = "#3fb950"; // bids, publish stage, "live"/active state

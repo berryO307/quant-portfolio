@@ -9,25 +9,25 @@
    light-mode (:root) tokens below are now genuinely reachable, not dead
    weight the tweakcn export happened to include. */
 :root {
-  --background: oklch(1.0000 0 0);
-  --foreground: oklch(0.1371 0.0360 258.5258);
-  --card: oklch(1.0000 0 0);
-  --card-foreground: oklch(0.1371 0.0360 258.5258);
-  --popover: oklch(1.0000 0 0);
-  --popover-foreground: oklch(0.1371 0.0360 258.5258);
-  --primary: oklch(0.5460 0.2153 262.8719);
-  --primary-foreground: oklch(0.9838 0.0035 247.8583);
-  --secondary: oklch(0.9684 0.0068 247.8951);
-  --secondary-foreground: oklch(0.2079 0.0399 265.7275);
-  --muted: oklch(0.9684 0.0068 247.8951);
-  --muted-foreground: oklch(0.5547 0.0407 257.4404);
-  --accent: oklch(0.9684 0.0068 247.8951);
-  --accent-foreground: oklch(0.2079 0.0399 265.7275);
-  --destructive: oklch(0.6368 0.2078 25.3259);
-  --destructive-foreground: oklch(0.9838 0.0035 247.8583);
-  --border: oklch(0.9290 0.0126 255.5317);
-  --input: oklch(0.9290 0.0126 255.5317);
-  --ring: oklch(0.5460 0.2153 262.8719);
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.1450 0 0);
+  --card: oklch(0.9950 0 0);
+  --card-foreground: oklch(0.1450 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.1450 0 0);
+  --primary: oklch(0.2050 0 0);
+  --primary-foreground: oklch(0.9850 0 0);
+  --secondary: oklch(0.8700 0 0);
+  --secondary-foreground: oklch(0.1450 0 0);
+  --muted: oklch(0.9500 0 0);
+  --muted-foreground: oklch(0.5560 0 0);
+  --accent: oklch(0.9500 0 0);
+  --accent-foreground: oklch(0.2050 0 0);
+  --destructive: oklch(0.5770 0.2450 27.3250);
+  --destructive-foreground: oklch(1 0 0);
+  --border: oklch(0.9500 0 0);
+  --input: oklch(0.9700 0 0);
+  --ring: oklch(0.7080 0 0);
   /* Domain tokens NOT part of the tweakcn export — bid/ask, pipeline-stage
      attribution, host jitter/severity, and a "panel" tone distinct from
      card/background (this theme has --card == --background exactly, which
@@ -36,7 +36,7 @@
      constants exactly (zero visual change for the dashboard's original
      always-dark appearance); light-mode values are new, chosen for
      legibility on a white background rather than derived from anything. */
-  --panel: #f1f5f9;
+  --panel: #f2f2f2;
   /* Architecture page's "constants zone" (band 03) cards — must visibly
      recede versus the flow-zone cards above (spec: "card-flat ... visibly
      recedes"). The spec gives dark-mode hex literals only; this derives a
@@ -121,38 +121,38 @@
   --heat-hot: #f97316;
   --heat-crit: #dc2626;
   --error-bg: #fef2f2;
-  --chart-1: oklch(0.5460 0.2153 262.8719);
-  --chart-2: oklch(0.7211 0.1415 253.1015);
-  --chart-3: oklch(0.6325 0.1843 258.6360);
-  --chart-4: oklch(0.8117 0.0970 249.0979);
-  --chart-5: oklch(0.8829 0.0573 251.9139);
-  --sidebar: oklch(0.9838 0.0035 247.8583);
-  --sidebar-foreground: oklch(0.2079 0.0399 265.7275);
-  --sidebar-primary: oklch(0.5460 0.2153 262.8719);
-  --sidebar-primary-foreground: oklch(1.0000 0 0);
-  --sidebar-accent: oklch(0.9290 0.0126 255.5317);
-  --sidebar-accent-foreground: oklch(0.5460 0.2153 262.8719);
-  --sidebar-border: oklch(0.9290 0.0126 255.5317);
-  --sidebar-ring: oklch(0.5460 0.2153 262.8719);
-  --font-sans: var(--font-plex-sans), var(--font-inter), system-ui, sans-serif;
-  --font-serif: Georgia, serif;
-  --font-mono: var(--font-plex-mono), var(--font-jetbrains-mono), monospace;
-  --radius: 0.625rem;
-  --shadow-x: 0px;
-  --shadow-y: 4px;
-  --shadow-blur: 10px;
+  --chart-1: oklch(0.8100 0.1000 252);
+  --chart-2: oklch(0.6200 0.1900 260);
+  --chart-3: oklch(0.5500 0.2200 263);
+  --chart-4: oklch(0.4900 0.2200 264);
+  --chart-5: oklch(0.4200 0.1800 266);
+  --sidebar: oklch(0.9850 0 0);
+  --sidebar-foreground: oklch(0.1450 0 0);
+  --sidebar-primary: oklch(0.2050 0 0);
+  --sidebar-primary-foreground: oklch(0.9850 0 0);
+  --sidebar-accent: oklch(0.9700 0 0);
+  --sidebar-accent-foreground: oklch(0.2050 0 0);
+  --sidebar-border: oklch(0.9220 0 0);
+  --sidebar-ring: oklch(0.7080 0 0);
+  --font-sans: var(--font-dm-sans), ui-sans-serif, sans-serif, system-ui;
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --radius: 1rem;
+  --shadow-x: 0;
+  --shadow-y: 1px;
+  --shadow-blur: 3px;
   --shadow-spread: 0px;
   --shadow-opacity: 0.1;
-  --shadow-color: 0, 0%, 0%;
-  --shadow-2xs: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.05);
-  --shadow-xs: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.05);
-  --shadow-sm: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.10), 0px 1px 2px -1px hsl(0, 0%, 0% / 0.10);
-  --shadow: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.10), 0px 1px 2px -1px hsl(0, 0%, 0% / 0.10);
-  --shadow-md: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.10), 0px 2px 4px -1px hsl(0, 0%, 0% / 0.10);
-  --shadow-lg: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.10), 0px 4px 6px -1px hsl(0, 0%, 0% / 0.10);
-  --shadow-xl: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.10), 0px 8px 10px -1px hsl(0, 0%, 0% / 0.10);
-  --shadow-2xl: 0px 4px 10px 0px hsl(0, 0%, 0% / 0.25);
-  --tracking-normal: -0.015em;
+  --shadow-color: oklch(0 0 0);
+  --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+  --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+  --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
+  --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
+  --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 2px 4px -1px hsl(0 0% 0% / 0.10);
+  --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 4px 6px -1px hsl(0 0% 0% / 0.10);
+  --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 8px 10px -1px hsl(0 0% 0% / 0.10);
+  --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.25);
+  --tracking-normal: 0em;
   --spacing: 0.25rem;
 }
 
@@ -161,25 +161,25 @@
      dark theme's tokens here — rather than restyling each panel — is what
      makes the existing dashboard panels pick up the new look without any
      component's render changing. Light theme (:root above) is untouched. */
-  --background: #080b11;
-  --foreground: #e4e8f0;
-  --card: #0e1420;
-  --card-foreground: #e4e8f0;
-  --popover: #0e1420;
-  --popover-foreground: #e4e8f0;
-  --primary: oklch(0.6232 0.1879 259.7964);
-  --primary-foreground: oklch(0.2079 0.0399 265.7275);
-  --secondary: oklch(0.2800 0.0369 259.9740);
-  --secondary-foreground: oklch(0.9838 0.0035 247.8583);
-  --muted: #151c2a;
-  --muted-foreground: #8b93a7;
-  --accent: #151c2a;
-  --accent-foreground: #e4e8f0;
-  --destructive: oklch(0.3959 0.1331 25.7205);
-  --destructive-foreground: #e4e8f0;
-  --border: #1b2230;
-  --input: #1b2230;
-  --ring: #5b9bf7;
+  --background: oklch(0.2050 0 0);
+  --foreground: oklch(0.9850 0 0);
+  --card: oklch(0.1650 0 0);
+  --card-foreground: oklch(0.9850 0 0);
+  --popover: oklch(0.2050 0 0);
+  --popover-foreground: oklch(0.9850 0 0);
+  --primary: oklch(0.9220 0 0);
+  --primary-foreground: oklch(0.2050 0 0);
+  --secondary: oklch(0.2690 0 0);
+  --secondary-foreground: oklch(0.9850 0 0);
+  --muted: oklch(0.2690 0 0);
+  --muted-foreground: oklch(0.7080 0 0);
+  --accent: oklch(0.3710 0 0);
+  --accent-foreground: oklch(0.9850 0 0);
+  --destructive: oklch(0.7040 0.1910 22.2160);
+  --destructive-foreground: oklch(0.9850 0 0);
+  --border: oklch(0.2690 0 0);
+  --input: oklch(0.2690 0 0);
+  --ring: oklch(0.5560 0 0);
   /* Third text tier below --muted-foreground, for de-emphasized captions
      in the new chrome. */
   --dim: #5b6577;
@@ -201,16 +201,15 @@
   --brand-amber: #f0a83d;
   --brand-red: #f0546b;
   --brand-green: #2fcf74;
-  /* Matches lib/theme.ts's COLOR_PANEL_BG/COLOR_GRID/COLOR_TEXT/COLOR_BID/
-     COLOR_ASK/COLOR_PARSE/COLOR_BOOK_UPDATE/COLOR_JITTER/COLOR_SEVERE/
-     COLOR_ERROR_BG exactly — see :root's comment above. */
-  --panel: #0e1420;
-  /* Spec-literal values (design tokens: card-flat #0a0e16, border-flat
-     #171e2b) — see :root's own comment on this pair for why dark uses the
-     exact spec hex while light derives one. */
-  --panel-flat: #0a0e16;
-  --border-flat: #171e2b;
-  --strip-bg: #0b111c;
+  --panel: #1e1e1e;
+  /* Same color-mix() derivation :root uses for this pair — was a pair of
+     spec-literal hex values here instead, but those predated the neutral-
+     gray theme swap and had gone blue-tinted the same way --panel had.
+     Deriving from --panel/--border/--background keeps this correct by
+     construction instead of needing its own manual re-tune next time. */
+  --panel-flat: color-mix(in srgb, var(--panel) 55%, var(--background) 45%);
+  --border-flat: color-mix(in srgb, var(--border) 70%, var(--background) 30%);
+  --strip-bg: color-mix(in srgb, var(--panel) 75%, var(--background) 25%);
   --grid: #111b2a;
   --chart-text: #cbd5e1;
   --bid: #3fb950;
@@ -229,39 +228,37 @@
   --heat-hot: #fb923c;
   --heat-crit: #f85149;
   --error-bg: #3a1418;
-  --chart-1: oklch(0.4878 0.2170 264.3876);
-  --chart-2: oklch(0.5449 0.2154 262.7414);
-  --chart-3: oklch(0.6776 0.1481 238.1044);
-  --chart-4: oklch(0.3752 0.0394 256.8467);
-  --chart-5: oklch(0.4691 0.1926 264.5776);
-  --sidebar: #0e1420;
-  --sidebar-foreground: #e4e8f0;
-  --sidebar-primary: #5b9bf7;
-  --sidebar-primary-foreground: #080b11;
-  --sidebar-accent: #151c2a;
-  --sidebar-accent-foreground: #e4e8f0;
-  --sidebar-border: #1b2230;
-  --sidebar-ring: #5b9bf7;
-  /* IBM Plex added in app/layout.tsx (Inter/JetBrains Mono were what this
-     app loaded before, kept as the fallback rather than removed). */
-  --font-sans: var(--font-plex-sans), var(--font-inter), system-ui, sans-serif;
-  --font-serif: Georgia, serif;
-  --font-mono: var(--font-plex-mono), var(--font-jetbrains-mono), monospace;
-  --radius: 0.625rem;
-  --shadow-x: 0px;
-  --shadow-y: 8px;
-  --shadow-blur: 15px;
+  --chart-1: oklch(0.8100 0.1000 252);
+  --chart-2: oklch(0.6200 0.1900 260);
+  --chart-3: oklch(0.5500 0.2200 263);
+  --chart-4: oklch(0.4900 0.2200 264);
+  --chart-5: oklch(0.4200 0.1800 266);
+  --sidebar: oklch(0.2690 0 0);
+  --sidebar-foreground: oklch(0.9850 0 0);
+  --sidebar-primary: oklch(0.4880 0.2430 264.3760);
+  --sidebar-primary-foreground: oklch(0.9850 0 0);
+  --sidebar-accent: oklch(0.2690 0 0);
+  --sidebar-accent-foreground: oklch(0.9850 0 0);
+  --sidebar-border: oklch(0.2750 0 0);
+  --sidebar-ring: oklch(0.4390 0 0);
+  --font-sans: var(--font-dm-sans), ui-sans-serif, sans-serif, system-ui;
+  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+  --radius: 1rem;
+  --shadow-x: 0;
+  --shadow-y: 1px;
+  --shadow-blur: 3px;
   --shadow-spread: 0px;
-  --shadow-opacity: 0.5;
-  --shadow-color: 0, 0%, 0%;
-  --shadow-2xs: 0px 8px 15px 0px hsl(0, 0%, 0% / 0.25);
-  --shadow-xs: 0px 8px 15px 0px hsl(0, 0%, 0% / 0.25);
-  --shadow-sm: 0px 8px 15px 0px hsl(0, 0%, 0% / 0.50), 0px 1px 2px -1px hsl(0, 0%, 0% / 0.50);
-  --shadow: 0px 8px 15px 0px hsl(0, 0%, 0% / 0.50), 0px 1px 2px -1px hsl(0, 0%, 0% / 0.50);
-  --shadow-md: 0px 8px 15px 0px hsl(0, 0%, 0% / 0.50), 0px 2px 4px -1px hsl(0, 0%, 0% / 0.50);
-  --shadow-lg: 0px 8px 15px 0px hsl(0, 0%, 0% / 0.50), 0px 4px 6px -1px hsl(0, 0%, 0% / 0.50);
-  --shadow-xl: 0px 8px 15px 0px hsl(0, 0%, 0% / 0.50), 0px 8px 10px -1px hsl(0, 0%, 0% / 0.50);
-  --shadow-2xl: 0px 8px 15px 0px hsl(0, 0%, 0% / 1.25);
+  --shadow-opacity: 0.1;
+  --shadow-color: oklch(0 0 0);
+  --shadow-2xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+  --shadow-xs: 0 1px 3px 0px hsl(0 0% 0% / 0.05);
+  --shadow-sm: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
+  --shadow: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 1px 2px -1px hsl(0 0% 0% / 0.10);
+  --shadow-md: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 2px 4px -1px hsl(0 0% 0% / 0.10);
+  --shadow-lg: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 4px 6px -1px hsl(0 0% 0% / 0.10);
+  --shadow-xl: 0 1px 3px 0px hsl(0 0% 0% / 0.10), 0 8px 10px -1px hsl(0 0% 0% / 0.10);
+  --shadow-2xl: 0 1px 3px 0px hsl(0 0% 0% / 0.25);
 }
 
 @theme inline {
