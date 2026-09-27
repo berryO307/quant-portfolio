@@ -27,10 +27,7 @@ local multi-instrument dev/demo tool, not a deployment with N configurable
 prod endpoints. Each entry needs its own `quant_day1.exe <symbol>` + relay
 pair running on its assigned port before its dropdown entry shows live
 data; an instrument whose gateway isn't running just shows the existing
-"feed unavailable" state (see the project's BUGS.md — there is currently
-no live gateway->relay push client, so "live" means a captured session
-replayed with `replay-gateway.mjs --loop`, same as every instrument so
-far). Each instrument also carries its own 24h-change figure (Hyperliquid's
+"feed unavailable" state. Each instrument also carries its own 24h-change figure (Hyperliquid's
 `metaAndAssetCtxs` markPx/prevDayPx — see `lib/use24hChange.ts`; Bybit
 support, including its REST ticker, was removed entirely) and its own
 display decimal precision (`priceDecimals`/`qtyDecimals`) — the
@@ -45,6 +42,12 @@ sync with whichever gateway process is actually feeding each port.
 3. In the project's Environment Variables settings, set `NEXT_PUBLIC_RELAY_WS_URL` and `NEXT_PUBLIC_RELAY_HEALTH_URL` to your deployed relay's public address (e.g. `wss://relay.example.com/live` and `https://relay.example.com/health` — see [`relay/README.md`](../relay/README.md) for standing that up on Oracle Cloud Free Tier).
 4. On the relay side, set `CORS_ORIGIN` to this Vercel deployment's exact origin (e.g. `https://your-app.vercel.app`) once you know it, rather than leaving the relay's default `*` open to any site.
 5. Deploy. No `vercel.json` is required — the defaults (Node.js runtime, automatic HTTPS, preview deployments per branch) are exactly what this static/client-only app needs.
+
+## The public deployment currently serves a replay, not a live feed
+
+`ReplayIndicator.tsx` shows a calm, persistent disclosure bar whenever the connected relay's `hello` handshake carries `isReplay: true` — this is explicit, driven by the relay/gateway wire protocol (`capturedAt`/`isReplay` in `HelloMessage`, see `lib/types.ts`), never inferred, so a future real-live deployment needs no special-casing here. The deployed instance is currently in this state: the public relay (`l2-relay`) is fed by `relay/scripts/replay-gateway.mjs --loop`, looping a real BTC session captured on desktop hardware, not a live Oracle Cloud gateway. Why: the original live cloud deployment's queue-stage tail latency (P99/P99.9 in the tens of milliseconds on a shared-vCPU free-tier instance) was investigated and root-caused rather than assumed — see the project's [`BUGS.md`](../BUGS.md) for the full methodology (ruling out hypervisor steal and swap with real correlated measurement, the `SCHED_FIFO` fix that got a real ~285x improvement, and why the residual tail is a hardware ceiling, not a code problem). The fix was to move real capture to native desktop hardware and serve that honestly-labeled replay to the public deployment instead of chasing a latency floor no affordable shared-vCPU tier can clear.
+
+A dedicated always-on home server (an old PC, bought cheaply) is the intended eventual replacement for this replay pipeline — deferred, not funded or scheduled yet, and for project-demonstration purposes specifically. Real constraints apply if/when that happens: ongoing electricity cost, and a stable public-reachability path (port forwarding or a CGNAT workaround) that doesn't exist today.
 
 ## What this app does *not* do
 
