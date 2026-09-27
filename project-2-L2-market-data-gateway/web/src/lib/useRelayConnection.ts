@@ -51,6 +51,13 @@ export interface RelayState {
   wsConnected: boolean;
   healthOk: boolean;
   cpuGhz: number;
+  // Set from the relay's own hello handshake -- undefined/false for a real
+  // live gateway, set by relay/scripts/replay-gateway.mjs looping a real
+  // captured session. isReplay is explicit, not inferred from capturedAt's
+  // presence, so a future real-live deployment never needs special-casing
+  // here. See lib/types.ts's HelloMessage for the full contract.
+  capturedAt: number | undefined;
+  isReplay: boolean;
   latestSnapshot: SnapshotRecord | null;
   // Wider-rounded books from Hyperliquid's own nSigFigs subscriptions, for
   // price-bucket tiers the primary (finest-rounding) snapshot doesn't have
@@ -73,6 +80,8 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
   const [wsConnected, setWsConnected] = useState(false);
   const [healthOk, setHealthOk] = useState(false);
   const [cpuGhz, setCpuGhz] = useState(DEFAULT_CPU_GHZ);
+  const [capturedAt, setCapturedAt] = useState<number | undefined>(undefined);
+  const [isReplay, setIsReplay] = useState(false);
   const [latestSnapshot, setLatestSnapshot] = useState<SnapshotRecord | null>(null);
   // A plain object, not a Map, in state -- an object's identity is easy to
   // refresh immutably on every update (spread into a new one), which is
@@ -167,6 +176,8 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
         case "hello":
           cpuGhzRef.current = parsed.cpu_ghz;
           setCpuGhz(parsed.cpu_ghz);
+          setCapturedAt(parsed.capturedAt);
+          setIsReplay(parsed.isReplay ?? false);
           break;
         case "snapshot":
           setLatestSnapshot(parsed);
@@ -274,5 +285,5 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
     [coarseSnapshotsByTier]
   );
 
-  return { wsConnected, healthOk, cpuGhz, latestSnapshot, coarseSnapshots, trades, recentSamples, stats };
+  return { wsConnected, healthOk, cpuGhz, capturedAt, isReplay, latestSnapshot, coarseSnapshots, trades, recentSamples, stats };
 }

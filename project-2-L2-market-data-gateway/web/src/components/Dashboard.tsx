@@ -5,6 +5,7 @@ import { useRelayConnection } from "@/lib/useRelayConnection";
 import { INSTRUMENTS, defaultBucketSize } from "@/lib/instruments";
 import { pickBestSnapshot } from "@/lib/orderBook";
 import { FeedStatusBanner } from "./FeedStatusBanner";
+import { ReplayIndicator } from "./ReplayIndicator";
 import { OrderBookDepthSplit } from "./OrderBookDepthSplit";
 import { TradesTape } from "./TradesTape";
 import { LatencyPanel } from "./LatencyPanel";
@@ -32,7 +33,7 @@ export function Dashboard() {
     setInstrument(next);
     setBucketSize(defaultBucketSize(next.priceBucketOptions));
   }
-  const { wsConnected, healthOk, cpuGhz, latestSnapshot, coarseSnapshots, trades, recentSamples, stats } = useRelayConnection(
+  const { wsConnected, healthOk, cpuGhz, capturedAt, isReplay, latestSnapshot, coarseSnapshots, trades, recentSamples, stats } = useRelayConnection(
     instrument.relayWsUrl,
     instrument.relayHealthUrl
   );
@@ -81,6 +82,7 @@ export function Dashboard() {
   // height here would overflow by exactly the top bar's height.
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
+      <ReplayIndicator isReplay={isReplay} capturedAt={capturedAt} />
       <FeedStatusBanner wsConnected={wsConnected} healthOk={healthOk} queueOverflowDropped={queueOverflowDropped} />
 
       {/* Two columns: market data (tabbed) on the left, latency on the

@@ -125,6 +125,16 @@ export interface StatsMessage {
 export interface HelloMessage {
   type: "hello";
   cpu_ghz: number;
+  // Set only when the upstream connection is relay/scripts/replay-gateway.mjs
+  // looping a real captured session, not a live gateway -- see relay/src/
+  // types.ts's own HelloMessage for the full contract. capturedAt is the
+  // ORIGINAL capture's start (epoch ms, from that session's own filename),
+  // never "now" -- a looping replay re-sends this same hello on every lap.
+  capturedAt?: number;
+  // Explicit, not inferred from capturedAt's presence or anything else --
+  // a future real-live gateway reconnecting should never need special-
+  // casing here just because it happens to share some other field.
+  isReplay?: boolean;
 }
 
 export type RelayMessage =
