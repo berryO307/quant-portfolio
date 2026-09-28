@@ -260,6 +260,11 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
         const uint16_t batch_size = static_cast<uint16_t>(n_trades);
         uint16_t idx = 0;
         for (auto trade_elem : trade_arr) {
+            // This tick's own marginal parse work starts here, not at t1 —
+            // t1 is the whole frame's arrival stamp, shared by every trade
+            // in it. See types.hpp's Tick comment / Engineering_Notes.md
+            // §11.6 for why the two must stay distinct.
+            uint64_t t_parse_begin = rdtscp();
             simdjson::ondemand::value trade_val;
             if (trade_elem.get(trade_val) != simdjson::SUCCESS) { ++idx; continue; }
             Tick trade_tick{};
@@ -274,10 +279,11 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
                 // records for pre-seed ticks the consumer now skips. The timestamps
                 // needed to compute this stage travel with the Tick (t1_tsc..t2_tsc),
                 // so the consumer derives it there.
-                trade_tick.t1_tsc      = t1;
-                trade_tick.t2_tsc      = t2;
-                trade_tick.batch_index = idx;
-                trade_tick.batch_size  = batch_size;
+                trade_tick.t1_tsc            = t1;
+                trade_tick.t_parse_begin_tsc = t_parse_begin;
+                trade_tick.t2_tsc            = t2;
+                trade_tick.batch_index       = idx;
+                trade_tick.batch_size        = batch_size;
                 // Return value checked: SpscRingBuffer<Tick,1024>::push()
                 // returns false (drops the tick) when full, and until this
                 // fix that return was discarded at both call sites in this
@@ -294,12 +300,15 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
 
     if (ok) {
         // l2Book is one tick per frame, so batch_index/batch_size keep their
-        // defaults (0 of 1).
+        // defaults (0 of 1), and there is no earlier sibling to wait
+        // behind — t_parse_begin_tsc == t1_tsc, giving this tick a
+        // correctly-zero in-frame-wait, same as §11.6 found live.
         uint64_t t2 = rdtscp();
         // See the batched-trade site above: parse_cycles is derived by the
         // consumer from t1_tsc..t2_tsc.
-        tick.t1_tsc = t1;
-        tick.t2_tsc = t2;
+        tick.t1_tsc            = t1;
+        tick.t_parse_begin_tsc = t1;
+        tick.t2_tsc            = t2;
         if (!queue_.push(std::move(tick))) {
             queue_overflow_dropped_.fetch_add(1, std::memory_order_relaxed);
         }

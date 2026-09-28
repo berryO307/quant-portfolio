@@ -28,6 +28,9 @@ export interface ChartTheme {
   text: string;
   bid: string;
   ask: string;
+  // Restored 2026-09-29 alongside t_parse_begin — see globals.css's own
+  // --in-frame comment.
+  inFrame: string;
   parse: string;
   queue: string;
   bookUpdate: string;
@@ -73,6 +76,7 @@ const FALLBACK: ChartTheme = {
   text: "#cbd5e1",
   bid: "#3fb950",
   ask: "#f85149",
+  inFrame: "#fb923c",
   parse: "#58a6ff",
   queue: "#2dd4bf",
   bookUpdate: "#bc8cff",
@@ -149,6 +153,7 @@ export function resolveChartTheme(): ChartTheme {
     text: resolveVar("--chart-text", FALLBACK.text),
     bid: resolveVar("--bid", FALLBACK.bid),
     ask: resolveVar("--ask", FALLBACK.ask),
+    inFrame: resolveVar("--in-frame", FALLBACK.inFrame),
     parse: resolveVar("--parse", FALLBACK.parse),
     queue: resolveVar("--queue", FALLBACK.queue),
     bookUpdate: resolveVar("--book-update", FALLBACK.bookUpdate),

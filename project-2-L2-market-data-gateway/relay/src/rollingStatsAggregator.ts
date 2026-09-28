@@ -30,6 +30,7 @@ export function mergeHistograms(histograms: Histogram[]): { counts: Float64Array
 interface LatencyBucket {
   timestampMs: number;
   total: Histogram;
+  in_frame: Histogram;
   parse: Histogram;
   queue: Histogram;
   book_update: Histogram;
@@ -38,6 +39,7 @@ interface LatencyBucket {
 
 interface LatencyStats {
   totalNs: number;
+  inFrameNs: number;
   parseNs: number;
   queueNs: number;
   bookUpdateNs: number;
@@ -100,7 +102,14 @@ export class RollingStatsAggregator {
     const cpuGhz = this.source.cpuGhz();
     const latencyNs = (record.t_publish - record.t_recv) / cpuGhz;
     const totalNs = (record.t_publish - record.t_recv) / cpuGhz;
-    const parseNs = (record.t_parse - record.t_recv) / cpuGhz;
+    // t_parse_begin falls back to t_recv for a pre-existing gateway/relay
+    // that predates it — reproduces the old conflated "parse" (cumulative
+    // through this tick's batch position) with inFrameNs correctly at 0,
+    // same fallback useRelayConnection.ts uses client-side. See
+    // SampleRecord's own comment and Engineering_Notes.md §11.6.
+    const parseBegin = record.t_parse_begin ?? record.t_recv;
+    const inFrameNs = (parseBegin - record.t_recv) / cpuGhz;
+    const parseNs = (record.t_parse - parseBegin) / cpuGhz;
     const queueNs = (record.t_pop - record.t_parse) / cpuGhz;
     const bookUpdateNs = (record.t_book - record.t_pop) / cpuGhz;
     const publishNs = (record.t_publish - record.t_book) / cpuGhz;
@@ -109,6 +118,7 @@ export class RollingStatsAggregator {
     this.sessionHistogram.record(latencyNs);
     this.recordRolling({
       totalNs,
+      inFrameNs,
       parseNs,
       queueNs,
       bookUpdateNs,
@@ -123,6 +133,7 @@ export class RollingStatsAggregator {
       bucket = {
         timestampMs: bucketId * BUCKET_MS,
         total: new Histogram(),
+        in_frame: new Histogram(),
         parse: new Histogram(),
         queue: new Histogram(),
         book_update: new Histogram(),
@@ -132,6 +143,7 @@ export class RollingStatsAggregator {
       this.evictStale(bucketId);
     }
     bucket.total.record(stats.totalNs);
+    bucket.in_frame.record(stats.inFrameNs);
     bucket.parse.record(stats.parseNs);
     bucket.queue.record(stats.queueNs);
     bucket.book_update.record(stats.bookUpdateNs);
@@ -155,6 +167,7 @@ export class RollingStatsAggregator {
     return {
       timestampMs: bucket.timestampMs,
       total: bucket.total.snapshot(),
+      inFrame: bucket.in_frame.snapshot(),
       parse: bucket.parse.snapshot(),
       queue: bucket.queue.snapshot(),
       bookUpdate: bucket.book_update.snapshot(),

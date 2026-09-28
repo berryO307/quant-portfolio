@@ -77,28 +77,30 @@ inline const char* side_to_str(SampleSide s) {
 // stage. Splitting at t_pop separates queue wait (t_pop - t_parse) from the
 // book update itself (t_book - t_pop).
 //
-// Previously also carried t_parse_begin (a marginal, not cumulative, parse
-// cost per tick within a batched frame), host_jitter_ns (ambient host
-// scheduling noise from a dedicated canary thread), and queue_depth (SPSC
-// queue size at pop) — removed as a deliberate project-scope decision: this
-// gateway measures its own hot-path work (parse/queue/book/publish), not the
-// host machine's scheduler behavior, and the deployment target (a Linux
-// server) doesn't have the Windows-scheduler-quantum noise those existed to
-// diagnose. See git history if any of the three is ever needed again.
+// t_parse_begin restored 2026-09-29 (see Tick's own comment in types.hpp
+// and Engineering_Notes.md §11.6): a marginal, not cumulative, per-tick
+// parse cost within a batched frame. Was bundled into a 2026-09-26 cleanup
+// alongside host_jitter_ns (ambient host scheduling noise from a dedicated
+// canary thread, legitimately Windows-diagnostic-only) and queue_depth
+// (SPSC queue size at pop) — those two stay removed; only this one is back,
+// since §11.6 already established live that dropping it silently
+// mislabels genuine in-frame batch wait as queue/parse time, on any
+// platform, not just Windows. See git history if host_jitter_ns/queue_depth
+// are ever needed again.
 struct ExportSample {
-    uint64_t   t_recv;       // rdtscp at frame recv (== Tick::t1_tsc; shared across a batch)
-    uint64_t   t_parse;      // rdtscp at parse done   (== Tick::t2_tsc / NormalizedTick::t2_tsc)
-    uint64_t   t_pop;        // rdtscp at consumer queue pop, before the book update
-    uint64_t   t_book;       // rdtscp at book-update done
-    uint64_t   t_publish;    // rdtscp at mmap publish done
-    uint16_t   batch_index;  // position within the arriving frame (see Tick::batch_index)
-    uint16_t   batch_size;   // tick count of that frame; 1 when it carried a single tick
+    uint64_t   t_recv;         // rdtscp at frame recv (== Tick::t1_tsc; shared across a batch)
+    uint64_t   t_parse_begin;  // rdtscp at this tick's own parse start (== Tick::t_parse_begin_tsc)
+    uint64_t   t_parse;        // rdtscp at parse done   (== Tick::t2_tsc / NormalizedTick::t2_tsc)
+    uint64_t   t_pop;          // rdtscp at consumer queue pop, before the book update
+    uint64_t   t_book;         // rdtscp at book-update done
+    uint64_t   t_publish;      // rdtscp at mmap publish done
+    uint16_t   batch_index;    // position within the arriving frame (see Tick::batch_index)
+    uint16_t   batch_size;     // tick count of that frame; 1 when it carried a single tick
     // Cumulative count of SpscRingBuffer::push() returning false (ring full,
     // tick silently dropped) across BOTH the depth and trades queues, as of
     // THIS sample — a running total sampled alongside it, not a per-tick
     // delta. Kept deliberately: this is data-completeness (did the order
-    // book miss a real tick), not a latency measurement, so it stayed when
-    // t_parse_begin/host_jitter_ns/queue_depth were removed.
+    // book miss a real tick), not a latency measurement.
     uint64_t   queue_overflow_dropped;
     SampleSide side;
     uint8_t    cpu_core_id;
@@ -182,12 +184,13 @@ inline std::string export_record_to_json(const ExportRecord& rec) {
     case ExportRecordType::SAMPLE: {
         const auto& s = rec.sample;
         int n = std::snprintf(buf, sizeof(buf),
-            "{\"type\":\"sample\",\"t_recv\":%llu,"
+            "{\"type\":\"sample\",\"t_recv\":%llu,\"t_parse_begin\":%llu,"
             "\"t_parse\":%llu,\"t_pop\":%llu,\"t_book\":%llu,"
             "\"t_publish\":%llu,"
             "\"batch_index\":%u,\"batch_size\":%u,\"queue_overflow_dropped\":%llu,"
             "\"side\":\"%s\",\"cpu_core\":%u}",
             static_cast<unsigned long long>(s.t_recv),
+            static_cast<unsigned long long>(s.t_parse_begin),
             static_cast<unsigned long long>(s.t_parse),
             static_cast<unsigned long long>(s.t_pop),
             static_cast<unsigned long long>(s.t_book),

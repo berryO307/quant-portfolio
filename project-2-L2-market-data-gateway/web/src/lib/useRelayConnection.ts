@@ -237,12 +237,19 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
           // back to t_parse for a pre-existing session file that predates
           // it, which reproduces the old (conflated) stage rather than
           // dropping the sample: the queue wait collapses into bookUpdate.
-          // See SampleRecord in ./types.
+          // t_parse_begin falls back to t_recv the same way, for the same
+          // reason — reproduces the old conflated "parse" (cumulative
+          // through this tick's batch position) rather than dropping the
+          // sample, with inFrameNs correctly landing at 0 in that case
+          // instead of silently going negative or undefined. See
+          // SampleRecord in ./types and Engineering_Notes.md §11.6.
           const pop = parsed.t_pop ?? parsed.t_parse;
+          const parseBegin = parsed.t_parse_begin ?? parsed.t_recv;
           pendingSamplesRef.current.push({
             tRecvTsc: parsed.t_recv,
             latencyNs: (parsed.t_publish - parsed.t_recv) / ghz,
-            parseNs: (parsed.t_parse - parsed.t_recv) / ghz,
+            inFrameNs: (parseBegin - parsed.t_recv) / ghz,
+            parseNs: (parsed.t_parse - parseBegin) / ghz,
             queueNs: (pop - parsed.t_parse) / ghz,
             bookUpdateNs: (parsed.t_book - pop) / ghz,
             publishNs: (parsed.t_publish - parsed.t_book) / ghz,

@@ -90,6 +90,12 @@
   --parse: #2563eb;
   --queue: #0d9488;
   --book-update: #7c3aed;
+  /* Restored 2026-09-29 alongside t_parse_begin (Engineering_Notes.md
+     §11.6) — same dedicated-hex-token pattern as --publish below, and a
+     distinct hue from every other stage/status color already in this file
+     (parse=blue, queue=teal, book-update=violet, publish=indigo,
+     severe/brand-amber=brown, heat-warm/hot=yellow/orange). */
+  --in-frame: #c2410c;
   /* Task #8 fix: the Publish stage previously reused chartTheme.palette[3]
      (this file's --chart-4, below) for its ECharts line/heatmap colour.
      --chart-N are oklch() — fine for plain CSS (StageBreakdown's div-based
@@ -219,6 +225,7 @@
   --book-update: #bc8cff;
   /* Same reasoning as the light theme's own --publish comment above. */
   --publish: #818cf8;
+  --in-frame: #fb923c;
   --severe: #b19655;
   /* Same thermal ramp as the light theme's own block — brighter stops,
      same "reuse --ask for critical" reasoning. See that block's comment
@@ -307,6 +314,7 @@
   --color-queue: var(--queue);
   --color-book-update: var(--book-update);
   --color-publish: var(--publish);
+  --color-in-frame: var(--in-frame);
   --color-severe: var(--severe);
   --color-heat-cool: var(--heat-cool);
   --color-heat-warm: var(--heat-warm);
@@ -503,6 +511,24 @@
   animation: tf-live-pulse 1.8s ease-in-out infinite;
 }
 
+/* LiveReplayToggle's status dot (both the sidebar row and the compact rail
+   badge) — breathing box-shadow glow for whichever mode (live/replay) is
+   the ACTUALLY connected one, so "on air" reads as alive rather than a
+   static colored dot. Color comes from --tf-dot-glow, set inline per
+   instance (red for live, brand-blue for replay) so one animation serves
+   both — see LiveReplayToggle.tsx's StatusDot/CompactModeButton. */
+@keyframes tf-dot-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px color-mix(in srgb, var(--tf-dot-glow) 60%, transparent); }
+  50%      { box-shadow: 0 0 10px 3px color-mix(in srgb, var(--tf-dot-glow) 100%, transparent); }
+}
+.tf-dot-glow {
+  /* Matches the animation's brighter keyframe — reduced-motion below
+     disables the pulse but keeps this as a static glow, same "solid line,
+     not invisible" treatment .tf-comet/.tf-arrow-pulse already use. */
+  box-shadow: 0 0 10px 3px color-mix(in srgb, var(--tf-dot-glow) 100%, transparent);
+  animation: tf-dot-glow 1.8s ease-in-out infinite;
+}
+
 /* React Flow's <Controls /> (architecture page): the library exposes these
    as real CSS custom properties specifically so a host app can theme them
    without !important — every button style resolves as
@@ -685,6 +711,7 @@
   .tf-shimmer,
   .tf-emoji-avatar,
   .tf-live-dot,
+  .tf-dot-glow,
   .tf-bar-1,
   .tf-bar-2,
   .tf-bar-3,
