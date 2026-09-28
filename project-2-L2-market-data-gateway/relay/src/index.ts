@@ -23,7 +23,6 @@ const connections = new ConnectionManager(MAX_CLIENTS);
 const broadcaster = new Broadcaster(ingestClient, connections);
 const rollingStats = new RollingStatsAggregator(ingestClient);
 const health = new HealthMonitor(ingestClient);
-void broadcaster; // constructed for its side effect (subscribing to the source); no further use here
 
 const httpServer = createServer((req, res) => {
   // The browser client (web/) polls /health and /stats directly from a
@@ -84,6 +83,16 @@ httpServer.on("upgrade", (req, socket, head) => {
           symbol: ingestClient.symbol(),
         })
       );
+      // Immediately after hello, same reasoning as hello itself: a client
+      // that connects mid-session shouldn't have to wait for the upstream's
+      // own next snapshot (unbounded for a replay — see Broadcaster's own
+      // comment) when a perfectly good one already exists from moments
+      // ago. Sent as its own message(s), not merged into hello, since the
+      // wire shape is a real SnapshotRecord/CoarseSnapshotRecord, not a
+      // hello field.
+      for (const payload of broadcaster.latestSnapshotPayloads()) {
+        ws.send(payload);
+      }
     });
     return;
   }

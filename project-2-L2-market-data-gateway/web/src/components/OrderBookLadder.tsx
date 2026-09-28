@@ -29,6 +29,12 @@ interface OrderBookLadderProps {
   // needsCoarseSnapshot in lib/instruments.ts. Same shape (bids/asks),
   // different price rounding.
   bucketedSnapshot: SnapshotRecord | CoarseSnapshotRecord | null;
+  // See useRelayConnection's own comment -- true once connected-and-
+  // healthy has held for an unreasonable amount of time with no snapshot
+  // at all. Distinguishes "just connected, this is normal" from "waited
+  // long enough that something's probably actually wrong" in the empty
+  // state below, instead of an indefinite unchanging ellipsis either way.
+  snapshotTimedOut: boolean;
   instrument: InstrumentConfig;
   // Owned by Dashboard, not this component — DepthCurve shows the exact
   // same bucketed book, so there's one selector for both, here, matching
@@ -84,6 +90,7 @@ function padBottom<T>(arr: T[], size: number): (T | null)[] {
 export function OrderBookLadder({
   snapshot,
   bucketedSnapshot,
+  snapshotTimedOut,
   instrument,
   bucketSize,
   onBucketSizeChange,
@@ -100,8 +107,18 @@ export function OrderBookLadder({
 
   if (!snapshot || (snapshot.bids.length === 0 && snapshot.asks.length === 0)) {
     return (
-      <div className="flex min-h-[200px] items-center justify-center text-xs text-muted-foreground">
-        Waiting for order book snapshot…
+      <div className="flex min-h-[200px] flex-col items-center justify-center gap-1.5 p-4 text-center text-xs">
+        {snapshotTimedOut ? (
+          <>
+            <span className="text-foreground">Still no order book snapshot</span>
+            <span className="max-w-xs text-muted-foreground">
+              Connected to the relay, but no snapshot has arrived after an unusually long wait — try
+              switching instruments and back, or refreshing the page.
+            </span>
+          </>
+        ) : (
+          <span className="text-muted-foreground">Waiting for order book snapshot…</span>
+        )}
       </div>
     );
   }
