@@ -191,6 +191,29 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
     // budget isn't the point here.
     static constexpr int kPopSpinIters = 256;
 
+    // TRIED AND REVERTED (see git history / PR description for the round
+    // this happened in): replacing the sleep_for(100us) fallback below with
+    // indefinite PAUSE-hinted spinning, on the theory that a voluntary sleep
+    // exposes this thread's wake-up to ordinary Windows scheduling variance
+    // because it is not Administrator-elevated and therefore not actually
+    // running at REALTIME_PRIORITY_CLASS (confirmed live — see main()'s own
+    // priority check and the startup warning it prints).
+    //
+    // That theory is half right and the fix didn't follow from it. A live
+    // before/after capture off this box's own /live feed, same duration,
+    // same conditions, caught a WORSE stall with indefinite spinning (CL:
+    // 3.60ms, one single-tick frame, flat-offset — not a batch ramp) than
+    // sleep_for ever produced in the same 2-3 minute window (1.39-1.68ms).
+    // A thread that is continuously spinning, never voluntarily yielding,
+    // has no wake-up to be delayed — so a stall that still happens while it
+    // spins cannot be wake-latency. It is the OS involuntarily preempting
+    // this thread regardless of whether it is sleeping or running, which is
+    // exactly what HIGH_PRIORITY_CLASS (not REALTIME) does not protect
+    // against. Spinning instead of sleeping bought nothing and cost a full
+    // core at 100% permanently, so it was reverted rather than kept as a
+    // speculative "might still help" change. Real fix, if this is worth
+    // closing: run elevated for genuine REALTIME_PRIORITY_CLASS — an
+    // operational change, not one this loop can make for itself.
     while (!stop.load(std::memory_order_relaxed)) {
         // FIX 2 (original): Replaced blocking pop_for() (ThreadQueue condvar API)
         // with non-blocking SpscRingBuffer::pop() + microsecond sleep — still true,
@@ -459,6 +482,7 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
             // to compile.
             sample_rec.sample = ExportSample{
                 .t_recv         = tick.t1_tsc,
+                .t_parse_begin  = tick.t_parse_begin_tsc,
                 .t_parse        = tick.t2_tsc,
                 .t_pop          = t3,
                 .t_book         = t4,

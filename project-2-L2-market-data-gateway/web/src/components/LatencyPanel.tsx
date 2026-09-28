@@ -402,6 +402,10 @@ export function LatencyPanel({
 
     const stages = [
       {
+        name: "in-frame-wait",
+        value: latestSpike.inFrame.p99Ns,
+      },
+      {
         name: "parse",
         value: latestSpike.parse.p99Ns,
       },
@@ -501,6 +505,12 @@ export function LatencyPanel({
       valueNs: number;
       color: string;
     }[] = [
+      {
+        key: "inFrame",
+        name: "in-frame wait",
+        valueNs: bucket.inFrame.p99Ns,
+        color: chartTheme.inFrame,
+      },
       {
         key: "parse",
         name: "parse",

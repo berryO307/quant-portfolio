@@ -73,21 +73,31 @@ struct Tick {
     TickData data;
     // Per-stage latency measurement (rdtscp, see rdtsc.hpp):
     // t1_tsc is captured on recv, before parsing begins.
-    // t2_tsc is captured after parsing but before queue push.
+    // t_parse_begin_tsc is captured right before THIS tick's own parse work
+    // starts (== t1_tsc for a frame's first/only tick).
+    // t2_tsc is captured after this tick's own parse is done, before queue push.
     uint64_t t1_tsc = 0;
+    uint64_t t_parse_begin_tsc = 0;
     uint64_t t2_tsc = 0;
 
     // One WebSocket frame can carry many ticks (Hyperliquid's "trades"
     // channel is an array), and every tick in such a frame shares t1_tsc
-    // because they genuinely did arrive together. "parse" (t2_tsc - t1_tsc)
-    // is therefore the cumulative cost through this tick's position in the
-    // frame, not this tick's own marginal cost alone — a project decision,
-    // not an oversight: this used to be split into a separate "in-frame
-    // wait" stage (t_parse_begin_tsc marking where each tick's own parse
-    // began) plus a marginal "parse", removed as not worth the extra
-    // per-tick field once host-jitter-style diagnostic granularity stopped
-    // being a project goal. See git history if that split is ever needed
-    // again.
+    // because they genuinely did arrive together. Restored 2026-09-29:
+    // this split (t_parse_begin_tsc marking where each tick's own parse
+    // began, separate from the frame-shared t1_tsc) existed once already —
+    // see Engineering_Notes.md §11.6 — and was removed in commit 706b420 as
+    // part of an unrelated host-jitter-canary cleanup that didn't
+    // distinguish "Windows-scheduler diagnostic scaffolding" (legitimately
+    // removable) from "correct stage attribution for a batched frame"
+    // (not — Hyperliquid's own batching is not a Windows artifact and the
+    // consequence is platform-independent). Without it, "parse" (t2_tsc -
+    // t1_tsc) is the CUMULATIVE cost through this tick's position in the
+    // frame — §11.6 measured this as 53.1% of all latency on one session,
+    // misattributed to parse/queue rather than to time this tick spent
+    // sitting in an already-received frame behind its earlier siblings.
+    // Restoring the field lets t2_tsc - t_parse_begin_tsc report this
+    // tick's own marginal parse cost again, with t_parse_begin_tsc -
+    // t1_tsc recovering the in-frame-wait segment §11.6 named.
     //
     // Position of this tick within its frame. batch_size is the frame's
     // tick count (1 for a frame that carries a single tick). Exported so
