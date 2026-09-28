@@ -39,6 +39,9 @@ interface DepthCurveProps {
   // crossing. Required, not optional — an omitted value would silently
   // reintroduce exactly that bug with no signal anything was wrong.
   primarySnapshot: SnapshotRecord | null;
+  // See OrderBookLadder's own comment -- true once connected-and-healthy
+  // has held unreasonably long with no snapshot at all.
+  snapshotTimedOut: boolean;
   hoveredPrice: number | null; // raw scaled price (PRICE_SCALE) — see lib/types.ts's toPrice()
   onHoverPrice: (price: number | null) => void;
   minHeight?: number;
@@ -221,6 +224,7 @@ function nearestIndex(sortedXs: readonly number[], target: number): number | nul
 export function DepthCurve({
   snapshot,
   primarySnapshot,
+  snapshotTimedOut,
   hoveredPrice,
   onHoverPrice,
   minHeight = 200,
@@ -685,8 +689,17 @@ export function DepthCurve({
       <div className="relative min-h-0 flex-1" style={{ minHeight }}>
         <div ref={containerRef} className="absolute inset-0" />
         {!hasData && (
-          <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-muted-foreground">
-            Waiting for order book snapshot…
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-4 text-center">
+            {snapshotTimedOut ? (
+              <>
+                <span className="text-xs text-foreground">Still no order book snapshot</span>
+                <span className="max-w-xs text-xs text-muted-foreground">
+                  Connected, but no snapshot has arrived after an unusually long wait.
+                </span>
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground">Waiting for order book snapshot…</span>
+            )}
           </div>
         )}
       </div>

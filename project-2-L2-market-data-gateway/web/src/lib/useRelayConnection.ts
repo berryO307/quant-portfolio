@@ -20,6 +20,16 @@ const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_MULT = 2;
 
 const HEALTH_POLL_MS = 5_000;
+// How long to sit on "connected, healthy, but no order book snapshot yet"
+// before treating it as worth telling the user about, rather than an
+// indefinite silent wait. A live gateway's own l2Book cadence is a few
+// times a second, so this should essentially never fire post-connect in
+// the live case; a replayed session now gets the relay's own cached
+// latest snapshot immediately on connect too (see relay/src/broadcaster.ts),
+// so this is deliberately a backstop for whatever that doesn't cover (a
+// genuinely brand-new upstream session with no snapshot yet at all, or a
+// dropped first message) rather than the primary fix for the wait itself.
+const SNAPSHOT_TIMEOUT_MS = 20_000;
 // Trimmed from 200 (Phase 8.5's third pass): TradesTape no longer scrolls —
 // it renders a fixed number of rows that fit its container and shows only
 // the newest ones, so retaining far more than that in memory just meant an
@@ -68,6 +78,12 @@ export interface RelayState {
   // yet (no hello received, or expectedSymbol not passed) -- absence of
   // information is not evidence of a mismatch.
   symbolMismatch: boolean;
+  // True once the connection has been healthy for SNAPSHOT_TIMEOUT_MS with
+  // no snapshot at all -- distinguishes "briefly waiting, this is normal"
+  // from "waited an unreasonable amount of time, something's probably
+  // actually wrong" so OrderBookLadder/DepthCurve can say something more
+  // useful than an indefinite "Waiting for order book snapshot…".
+  snapshotTimedOut: boolean;
   latestSnapshot: SnapshotRecord | null;
   // Wider-rounded books from Hyperliquid's own nSigFigs subscriptions, for
   // price-bucket tiers the primary (finest-rounding) snapshot doesn't have
@@ -93,6 +109,7 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
   const [capturedAt, setCapturedAt] = useState<number | undefined>(undefined);
   const [isReplay, setIsReplay] = useState(false);
   const [symbolMismatch, setSymbolMismatch] = useState(false);
+  const [snapshotTimedOut, setSnapshotTimedOut] = useState(false);
   const [latestSnapshot, setLatestSnapshot] = useState<SnapshotRecord | null>(null);
   // A plain object, not a Map, in state -- an object's identity is easy to
   // refresh immutably on every update (spread into a new one), which is
@@ -163,6 +180,7 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
     setCapturedAt(undefined);
     setIsReplay(false);
     setSymbolMismatch(false);
+    setSnapshotTimedOut(false);
     // pendingSamplesRef (the rAF flush buffer below) is deliberately left
     // alone — it holds at most one animation frame's worth of not-yet-
     // flushed samples, mutating a ref during render isn't allowed here
@@ -320,6 +338,21 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
     };
   }, [healthUrl]);
 
+  // Starts (or clears) the moment any of its own inputs change -- healthy
+  // with a snapshot already in hand, or not healthy at all, both clear it
+  // immediately (nothing to time out); only "healthy AND still null" runs
+  // the clock. Re-running per latestSnapshot identity change is fine: once
+  // it's non-null this effect's own early return means the timer never
+  // gets (re)armed again until the connection actually drops.
+  useEffect(() => {
+    if (!wsConnected || !healthOk || latestSnapshot != null) {
+      setSnapshotTimedOut(false);
+      return;
+    }
+    const id = setTimeout(() => setSnapshotTimedOut(true), SNAPSHOT_TIMEOUT_MS);
+    return () => clearTimeout(id);
+  }, [wsConnected, healthOk, latestSnapshot]);
+
   const coarseSnapshots = useMemo(
     () => new Map(Object.entries(coarseSnapshotsByTier).map(([k, v]) => [Number(k), v])),
     [coarseSnapshotsByTier]
@@ -332,6 +365,7 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
     capturedAt,
     isReplay,
     symbolMismatch,
+    snapshotTimedOut,
     latestSnapshot,
     coarseSnapshots,
     trades,
