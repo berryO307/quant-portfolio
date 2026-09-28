@@ -55,7 +55,20 @@ export function TradesTape({ trades }: TradesTapeProps) {
 }
 
 function TradeRow({ trade }: { trade: TimedTrade }) {
-  const color = trade.side === "bid" ? "text-[#3fb950]" : "text-[#f85149]";
+  // trade.side is NOT the trade's own buy/sell direction -- for a
+  // TradeRecord it's SampleSide, the RESTING side the trade printed
+  // against (see include/export_pipeline.hpp's own comment: "the resting
+  // side a trade printed against, is_buyer_maker==true means the seller
+  // was the taker, i.e. the trade printed against the bid"). A trade that
+  // hit the bid was a SELL (an aggressor sold into a resting buy order);
+  // a trade that hit the ask was a BUY. That's the OPPOSITE polarity from
+  // an OrderBookLadder row's own `side`, where "bid" genuinely does mean
+  // a buy order sitting in the book -- same enum, two different meanings,
+  // and this component was applying the ladder's meaning to a trade.
+  // Verified empirically: cross-referenced 208 consecutive live WTI trades
+  // against Hyperliquid's own raw WS feed by trade_id -- every single one
+  // came back inverted under the old side==="bid"?green:red mapping.
+  const color = trade.side === "ask" ? "text-[#3fb950]" : "text-[#f85149]";
   const date = new Date(trade.receivedAtMs);
   const time =
     date.toLocaleTimeString("en-US", { hour12: false }) + "." + String(trade.receivedAtMs % 1000).padStart(3, "0");
