@@ -132,6 +132,18 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
     setTrades([]);
     setRecentSamples([]);
     setStats(null);
+    // capturedAt/isReplay reset here too, for the exact same reason as the
+    // fields above: with a second real instrument now switchable in the UI
+    // (BTC and WTI, each its own relay connection with its own original
+    // capture timestamp), leaving these un-reset meant switching to an
+    // instrument whose relay was slow to send its hello (or wasn't running)
+    // showed the PREVIOUS instrument's replay banner -- "originally
+    // captured <BTC's date>" -- under the new instrument's label. cpuGhz is
+    // deliberately still left alone: a stale value there only affects an
+    // internal ns conversion for a few samples until the real hello lands,
+    // never something rendered directly at the user like a capture date.
+    setCapturedAt(undefined);
+    setIsReplay(false);
     // pendingSamplesRef (the rAF flush buffer below) is deliberately left
     // alone — it holds at most one animation frame's worth of not-yet-
     // flushed samples, mutating a ref during render isn't allowed here
