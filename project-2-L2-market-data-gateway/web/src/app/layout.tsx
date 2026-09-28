@@ -5,6 +5,7 @@ import "./globals.css";
 import { TopBar } from "@/components/TopBar";
 import { Sidebar } from "@/components/Sidebar";
 import { SidebarStateProvider } from "@/lib/sidebarState";
+import { FeedModeStateProvider } from "@/lib/feedModeState";
 
 // Names picked to match globals.css's --font-sans/--font-mono, which
 // reference var(--font-dm-sans)/var(--font-geist-mono) directly — this
@@ -103,11 +104,13 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           Sidebar reads. */}
       <body className="h-full flex flex-col overflow-hidden bg-background text-foreground">
         <SidebarStateProvider>
-          <TopBar />
-          <div className="flex min-h-0 flex-1">
-            <Sidebar />
-            <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
-          </div>
+          <FeedModeStateProvider>
+            <TopBar />
+            <div className="flex min-h-0 flex-1">
+              <Sidebar />
+              <main className="min-w-0 flex-1 overflow-hidden">{children}</main>
+            </div>
+          </FeedModeStateProvider>
         </SidebarStateProvider>
       </body>
     </html>
