@@ -9,7 +9,28 @@
 // can be calculated precisely using int64_t, preventing floating-point errors and truncation on 1-tick spreads.
 
 static constexpr int64_t PRICE_SCALE = 10000; // Derived from Binance tickSize (0.1) and stepSize (0.001)
-static constexpr int64_t QTY_SCALE   = 1000;
+
+// QTY_SCALE=1000 (3 decimal digits) was also a Binance/Bybit-era leftover
+// and silently truncated real Hyperliquid size precision for any asset
+// whose szDecimals exceeds 3 -- confirmed live: cross-referencing 208 real
+// BTC trades against Hyperliquid's own raw feed showed ~38% truncated
+// (many small trades, e.g. a real 0.00042 BTC print, displayed as exactly
+// 0 -- parse_scaled's "skip trailing digits beyond our scale" behavior is
+// a silent floor, not a rounding error). Hyperliquid's own BTC asset
+// reports szDecimals=5. Queried EVERY currently-listed perp asset across
+// the native dex and all 9 builder-deployed sub-dexes (xyz, flx, vntl,
+// hyna, km, cash, para, mkts, io) via their metaAndAssetCtxs API: the real
+// observed maximum szDecimals across all of them is 5 (BTC among several
+// others). Set to 1,000,000 (6 decimals) -- one full decimal digit of
+// headroom past every currently-known asset -- rather than exactly 5, so
+// a new instrument at today's observed ceiling doesn't require touching
+// this constant again. Unlike PRICE_SCALE (which feeds PriceLadder's
+// tick_step-based array indexing -- see order_book.hpp/.cpp -- and is
+// NOT safe to change without also reworking infer_tick_step's clamp),
+// QTY_SCALE only scales a stored VALUE, never an index, so raising it
+// carries no array-sizing risk. Mirrored exactly in web/src/lib/types.ts
+// -- both must match or size values silently decode wrong.
+static constexpr int64_t QTY_SCALE   = 1'000'000;
 
 // Production-grade representation: prices and quantities stored as scaled int64_t (ticks) 
 // to eliminate floating-point precision errors and ensure deterministic matching behavior.
