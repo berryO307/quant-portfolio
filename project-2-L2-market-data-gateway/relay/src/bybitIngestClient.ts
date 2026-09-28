@@ -40,6 +40,7 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
   private lastCpuGhz = DEFAULT_CPU_GHZ;
   private lastCapturedAt: number | undefined;
   private lastIsReplay = false;
+  private lastSymbol: string | undefined;
 
   // ingestToken: when set (INGEST_TOKEN env var in production — see
   // relay/README.md), a connecting client must prove it knows this value in
@@ -65,6 +66,10 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
 
   isReplay(): boolean {
     return this.lastIsReplay;
+  }
+
+  symbol(): string | undefined {
+    return this.lastSymbol;
   }
 
   handleConnection(ws: WebSocket): void {
@@ -99,7 +104,13 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
       this.lastCpuGhz = parsed.cpu_ghz;
       this.lastCapturedAt = parsed.capturedAt;
       this.lastIsReplay = parsed.isReplay ?? false;
-      this.emit("connected", { cpuGhz: this.lastCpuGhz, capturedAt: this.lastCapturedAt, isReplay: this.lastIsReplay });
+      this.lastSymbol = parsed.symbol;
+      this.emit("connected", {
+        cpuGhz: this.lastCpuGhz,
+        capturedAt: this.lastCapturedAt,
+        isReplay: this.lastIsReplay,
+        symbol: this.lastSymbol,
+      });
 
       ws.on("message", (data2) => this.handleMessage(data2));
       // "close" always follows "error" for a ws connection, so relying on
@@ -136,7 +147,13 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
       this.lastCpuGhz = parsed.cpu_ghz;
       this.lastCapturedAt = parsed.capturedAt;
       this.lastIsReplay = parsed.isReplay ?? false;
-      this.emit("connected", { cpuGhz: this.lastCpuGhz, capturedAt: this.lastCapturedAt, isReplay: this.lastIsReplay });
+      this.lastSymbol = parsed.symbol;
+      this.emit("connected", {
+        cpuGhz: this.lastCpuGhz,
+        capturedAt: this.lastCapturedAt,
+        isReplay: this.lastIsReplay,
+        symbol: this.lastSymbol,
+      });
       return;
     }
 

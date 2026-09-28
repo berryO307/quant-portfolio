@@ -81,6 +81,7 @@ httpServer.on("upgrade", (req, socket, head) => {
           cpu_ghz: ingestClient.cpuGhz(),
           capturedAt: ingestClient.capturedAt(),
           isReplay: ingestClient.isReplay(),
+          symbol: ingestClient.symbol(),
         })
       );
     });
@@ -94,8 +95,8 @@ httpServer.on("upgrade", (req, socket, head) => {
 // upstream gateway (re)connects, so clients already open pick up a changed
 // cpu_ghz (or a replay session starting/looping) too, not just newly-
 // connecting ones (handled above).
-ingestClient.on("connected", ({ cpuGhz, capturedAt, isReplay }) => {
-  connections.broadcast(JSON.stringify({ type: "hello", cpu_ghz: cpuGhz, capturedAt, isReplay }));
+ingestClient.on("connected", ({ cpuGhz, capturedAt, isReplay, symbol }) => {
+  connections.broadcast(JSON.stringify({ type: "hello", cpu_ghz: cpuGhz, capturedAt, isReplay, symbol }));
 });
 
 // Push the rolling/session stats snapshot to browser clients on the same

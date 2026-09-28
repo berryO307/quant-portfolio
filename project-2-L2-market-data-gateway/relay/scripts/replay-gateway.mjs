@@ -8,8 +8,15 @@
 // capture itself was calibrated at (the C++ process prints this at startup,
 // e.g. "Calibrated Host TSC Frequency: 3.80001 GHz" — pass that value in).
 //
-// Usage: node scripts/replay-gateway.mjs <path-to-session.ndjson.gz> [port=8080] [cpuGhz] [--loop]
+// Usage: node scripts/replay-gateway.mjs <path-to-session.ndjson.gz> [port=8080] [cpuGhz] --symbol=<SYM> [--loop]
 // Set INGEST_TOKEN to match the relay's if it's running with one configured.
+//
+// --symbol is required, not defaulted: a session filename (session_<epoch_ms>.ndjson.gz)
+// carries a capture TIMESTAMP but never an instrument -- unlike capturedAt,
+// there is no honest fallback to parse here, and BTC has no more claim to
+// being "the default instrument" now that a second one (WTI, xyz:CL) is
+// real. Stamped onto the hello and onto every individual record so the wire
+// format is self-describing regardless of which port/relay it arrived on.
 //
 // Without --loop this does exactly one real-time pass through the file and
 // then disconnects — by design, matching a real gateway session ending.
@@ -27,9 +34,13 @@ import { basename } from "node:path";
 
 const args = process.argv.slice(2);
 const LOOP = args.includes("--loop");
-const [filePath, portArg, cpuGhzArg] = args.filter((a) => a !== "--loop");
-if (!filePath) {
-  console.error("usage: node scripts/replay-gateway.mjs <session.ndjson.gz> [port=8080] [cpuGhz] [--loop]");
+const symbolArg = args.find((a) => a.startsWith("--symbol="));
+const SYMBOL = symbolArg ? symbolArg.slice("--symbol=".length) : undefined;
+const [filePath, portArg, cpuGhzArg] = args.filter((a) => a !== "--loop" && !a.startsWith("--symbol="));
+if (!filePath || !SYMBOL) {
+  console.error(
+    "usage: node scripts/replay-gateway.mjs <session.ndjson.gz> [port=8080] [cpuGhz] --symbol=<SYM> [--loop]"
+  );
   process.exit(1);
 }
 
@@ -97,13 +108,14 @@ async function main() {
 
   gw.on("open", () => {
     console.log(
-      `[replay-gateway] connected to ws://localhost:${PORT}/ingest — replaying ${records.length} real records at real-time pace (cpu_ghz=${CPU_GHZ}${LOOP ? ", looping" : ""})`
+      `[replay-gateway] connected to ws://localhost:${PORT}/ingest — replaying ${records.length} real records for symbol=${SYMBOL} at real-time pace (cpu_ghz=${CPU_GHZ}${LOOP ? ", looping" : ""})`
     );
     gw.send(
       JSON.stringify({
         type: "hello",
         cpu_ghz: CPU_GHZ,
         isReplay: true,
+        symbol: SYMBOL,
         ...(CAPTURED_AT_MS != null ? { capturedAt: CAPTURED_AT_MS } : {}),
         ...(INGEST_TOKEN ? { token: INGEST_TOKEN } : {}),
       })
@@ -124,7 +136,12 @@ async function main() {
       if (tsc != null) prevTsc = tsc;
 
       if (gw.readyState === WebSocket.OPEN) {
-        gw.send(JSON.stringify(record));
+        // record.symbol is set here, not baked into the file on disk --
+        // ColdPathExporter's NDJSON export never carried a symbol field
+        // (one session file = one instrument by construction, matching
+        // whatever --symbol was passed to quant_day1.exe at capture time),
+        // so this is the one point that actually knows it.
+        gw.send(JSON.stringify({ ...record, symbol: SYMBOL }));
         sent++;
       }
     }
