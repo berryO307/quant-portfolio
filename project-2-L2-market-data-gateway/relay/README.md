@@ -17,10 +17,12 @@ npm run fake-gateway      # in a second terminal — simulates the C++ gateway's
 `scripts/replay-gateway.mjs` is `fake-gateway.mjs`'s counterpart for real data: it reads a session the C++ gateway actually captured (`data/export/session_*.ndjson.gz`, written by `ColdPathExporter` — see `include/export_pipeline.hpp`) and streams it to `/ingest` at real-time pace, so the web viewer shows genuine captured market activity instead of synthetic data, with no changes needed anywhere else in the pipeline (the exported record shapes already match the wire protocol exactly).
 
 ```bash
-npm run replay-gateway -- ../data/export/session_<timestamp>.ndjson.gz 8080 <cpu_ghz> --loop
+npm run replay-gateway -- ../data/export/session_<timestamp>.ndjson.gz 8080 <cpu_ghz> --symbol=<SYM> --loop
 ```
 
 `<cpu_ghz>` must be the value the *capture itself* printed at startup (`Calibrated Host TSC Frequency: X GHz`) — every stage-latency number downstream depends on converting that specific session's raw TSC deltas with the frequency they were actually recorded at, not a guessed or default one.
+
+`--symbol=<SYM>` is required (e.g. `--symbol=BTC` or `--symbol=xyz:CL`) — a session filename encodes a capture *timestamp*, never an instrument, so unlike the timestamp there's no honest value to fall back to if it's omitted. Stamped onto the hello handshake and onto every replayed record (see `relay/src/types.ts`'s `symbol` field) so the wire format is self-describing regardless of which port it arrived on.
 
 Without `--loop`, this does exactly one real-time pass through the file and then disconnects (matching a real gateway session ending) — for a 3-minute capture, that means the web viewer shows "Live feed unavailable" again after 3 real minutes, with nothing wrong. `--loop` re-runs the same pass indefinitely instead (re-sending the same `hello` each time, the same way a real gateway reconnecting would), which is almost always what you actually want for a standing local data source.
 
@@ -32,6 +34,7 @@ Without `--loop`, this does exactly one real-time pass through the file and then
 | `CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` on `/health` and `/stats`, which the browser polls cross-origin. Defaults open for local dev; **set this to your deployed web app's exact origin in production** (e.g. `https://your-app.vercel.app`) so other sites can't read these endpoints from a visitor's browser. |
 | `MAX_CLIENTS` | `500` | Concurrent `/live` browser-client cap enforced by `ConnectionManager`. A connection beyond this is closed immediately with code `1013` ("try again later"). Raise this if you expect more concurrent viewers than that; the per-client cost is small (a `Set` entry plus whatever's still in its send buffer). |
 | `INGEST_TOKEN` | unset (open) | Shared secret the gateway's hello handshake must include (`{"type":"hello","cpu_ghz":...,"token":"..."}`) before its connection is treated as the upstream feed. **Strongly recommended for any deployment reachable from the public internet** — without it, anyone who finds the relay's URL can connect to `/ingest` and push arbitrary fake market data to every connected viewer. Leaving it unset preserves the original open behavior, which is fine for local dev but not for production. |
+| `DATABASE_URL` | unset | Neon Postgres connection string, used only by `migrate-to-neon.mjs` and `replay-gateway-neon.mjs` (see below) — the relay server itself (`src/index.ts`) never reads this. Use the **pooled** connection string from Neon's dashboard, not the direct one — see the Neon section below for why. Handle exactly like `INGEST_TOKEN`: set as a systemd `Environment=` line on the deployed unit, never committed. |
 
 ## Deploying to an always-on Linux host (Oracle Cloud Free Tier)
 
@@ -115,6 +118,33 @@ Oracle Cloud's Always Free tier includes an ARM-based Ampere A1 VM (up to 4 OCPU
    `/ingest` is meant for one upstream connection at a time.
 6. **TLS.** The web viewer needs `wss://`/`https://`, not `ws://`/`http://`, once it's deployed on Vercel (mixed content is blocked by browsers). Put this relay behind a reverse proxy (Caddy is the simplest option — it handles Let's Encrypt certificates automatically) or a load balancer that terminates TLS, rather than trying to serve TLS from Node directly.
 7. **Point the web app at it** — set `NEXT_PUBLIC_RELAY_WS_URL=wss://your-domain/live` and `NEXT_PUBLIC_RELAY_HEALTH_URL=https://your-domain/health` in the Vercel project (see [`web/README.md`](../web/README.md)).
+
+## Tick data storage: Neon Postgres
+
+With a second instrument (WTI, `xyz:CL`) now real alongside BTC, a growing set of captured `.ndjson.gz` session files needing to be individually `scp`'d to whichever host runs the replay stopped being the right long-term approach — Neon Postgres is the canonical, queryable replay source going forward. `scripts/schema.sql` has the full design rationale in its own comments; short version: a `sessions` table (one row per captured file — symbol, capture timestamp, calibrated `cpu_ghz`) and a `ticks` table (one row per exported record, mirroring `ExportRecord`'s own sample/snapshot/coarse_snapshot/trade tagged union directly, ordered by a `seq` column so the original interleaved arrival order comes back with a plain `ORDER BY seq`).
+
+**The `.ndjson.gz` files are not replaced or deleted once loaded into Neon — they stay the durable cold backup and the only source `migrate-to-neon.mjs` ever reads from.** Neon is where a running `replay-gateway-neon.mjs` reads from; the files are what you'd re-run the migration against if the database were ever lost, wiped, or needed rebuilding with a schema change.
+
+1. **Create the schema** (once, against a fresh database):
+   ```bash
+   psql "$DATABASE_URL" -f scripts/schema.sql
+   ```
+2. **Load a captured session:**
+   ```bash
+   DATABASE_URL=postgres://... npm run migrate-to-neon -- ../data/export/session_<timestamp>.ndjson.gz --symbol=<SYM> --cpu-ghz=<GHZ>
+   ```
+   Safe to re-run against the same file — `sessions` is keyed `UNIQUE(symbol, captured_at_ms)`, so a repeat load replaces that session's `ticks` rows rather than duplicating them.
+3. **Replay from Neon instead of a file:**
+   ```bash
+   DATABASE_URL=postgres://... npm run replay-gateway-neon -- --symbol=<SYM> 8080 --loop
+   ```
+   Picks the most recent session loaded for that symbol. Same wire protocol, same pacing logic, same `--loop` behavior as the file-based `replay-gateway.mjs` — the only difference is where the tick data comes from.
+
+**Driver choice matters here.** `migrate-to-neon.mjs` is a short-lived batch job — a plain `pg` `Client` (one connection, a batch of inserts, exit) is the right tool, with no connection-lifecycle concerns worth solving for a process that finishes in seconds. `replay-gateway-neon.mjs` is different: it's meant to run under systemd indefinitely, and Neon's free tier autosuspends its compute endpoint after a period of inactivity — a persistent connection would need its own reconnect-on-idle handling to survive that reliably. Rather than building that, `replay-gateway-neon.mjs` uses `@neondatabase/serverless`'s HTTP driver and loads an entire session into memory in **one** query at startup, exactly like the file-based script reads its whole file up front. After that single query, the real-time pacing loop runs purely from memory for the rest of the process's life — Neon can autosuspend at any point after startup without affecting a running replay at all.
+
+**Does this replace the flat-file approach entirely?** No, by design — see above. The files are the origin data (only the C++ gateway's `ColdPathExporter` produces them) and the safety net; Neon is the queryable, symbol-indexed read path an operational replay service actually wants, and one that no longer requires physically copying a file to whatever host is going to serve it.
+
+**Status**: schema and both scripts are complete and syntax/type-checked, but not yet run against a real Neon database as of this writing — pending provisioning a Neon project and handing over its pooled connection string. `replay.service`/`replay-wti.service` deployment against Neon (rather than the current file-based `replay.service` on `l2-relay`) is a followup once that's in hand.
 
 ## What this service does *not* do
 

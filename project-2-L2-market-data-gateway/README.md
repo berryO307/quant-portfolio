@@ -77,6 +77,8 @@ The queue itself is institutional-grade — a 0.4 µs median and 7.4 µs p99 acr
 
 **Future plan (deferred, not committed to a date)**: once affordable, the intent is a low-cost dedicated always-on home server (~₹4-5k for an old PC), at which point this replay pipeline gets deprecated in favor of genuine 24/7 live capture again. This is for project-demonstration/portfolio purposes; real constraints apply and aren't glossed over — electricity cost, and needing a stable public-reachability path (port forwarding or a CGNAT workaround) that doesn't exist yet.
 
+**Second instrument (WTI crude oil, Hyperliquid symbol `xyz:CL`)**: verified live against Hyperliquid's own `perpDexs`/`metaAndAssetCtxs` API (not assumed from a symbol string) before capturing — real 24h notional volume in the tens of millions, distinct from the other `xyz` sub-dex tickers and from delisted look-alikes on other sub-dexs (`flx:OIL` is now confirmed delisted with zero volume). A short desktop capture for this symbol exists alongside BTC's, served the same way, on its own dedicated relay/port. Both sessions' tick data are meant to be loaded into a Neon Postgres store as the canonical replay source going forward, with the `.ndjson.gz` files kept as a durable cold backup rather than replaced — schema and scripts are built and documented in [`relay/README.md`](relay/README.md#tick-data-storage-neon-postgres), but the actual load into Neon has not run yet (pending provisioning a Neon project/connection string).
+
 ---
 
 ## Visual Analysis
