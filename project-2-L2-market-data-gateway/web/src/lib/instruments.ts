@@ -29,11 +29,18 @@ import { RELAY_HEALTH_URL, RELAY_WS_URL } from "./config";
 // (there is currently no live gateway->relay push client at all; "live" so
 // far has always meant a captured session replayed with --loop).
 //
-// priceDecimals/qtyDecimals: DISPLAY precision only — the wire scale
-// (PRICE_SCALE=10000, QTY_SCALE=1000 in lib/types.ts) is fixed and
-// identical for every instrument; what varies here is how many decimal
-// places make sense to actually show for an instrument whose price
-// magnitude ranges from ~98 (WTI) to ~77,000 (BTC).
+// priceDecimals/qtyDecimals: DISPLAY precision only, capped at whatever
+// the wire scale can actually carry losslessly. QTY_SCALE (lib/types.ts,
+// mirroring include/types.hpp) is one global ceiling sized to cover every
+// real Hyperliquid asset's own szDecimals (verified against every
+// currently-listed perp across the native dex and all sub-dexes — see
+// types.hpp's own comment for the numbers) rather than a per-instrument
+// value, so a qtyDecimals entry below can never ask for more precision
+// than the wire actually preserves; it can still legitimately ask for
+// FEWER decimals than the real data has, purely for display readability
+// (see WTI's own qtyDecimals below, showing 2 of its real 3). What varies
+// here is how many decimal places make sense to actually show for an
+// instrument whose price magnitude ranges from ~98 (WTI) to ~77,000 (BTC).
 //
 // priceBucketOptions: per-instrument price-grouping choices for the order
 // book ladder/depth curve (see lib/orderBook.ts's computeDepthLevelsBucketed
@@ -103,7 +110,15 @@ export const INSTRUMENTS: InstrumentConfig[] = [
     shortLabel: "BTC",
     ...relayUrls(8080, RELAY_WS_URL, RELAY_HEALTH_URL),
     priceDecimals: 2,
-    qtyDecimals: 3,
+    // 5, not 3 -- BTC's real Hyperliquid szDecimals is 5 (verified via
+    // their own metaAndAssetCtxs API). At the old qtyDecimals=3 this was
+    // ALSO silently displaying a fully-truncated wire value (QTY_SCALE was
+    // 1000, 3 decimals, before types.ts's own fix) as if it were correctly
+    // rounded -- e.g. a real 0.00042 BTC trade showed as 0.000. Now that
+    // the wire carries the real precision, showing fewer than 5 decimals
+    // here would silently hide real size again, just one layer up instead
+    // of at the wire.
+    qtyDecimals: 5,
     priceBucketOptions: [1, 10, 100, 1000],
   },
   {

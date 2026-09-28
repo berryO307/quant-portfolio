@@ -176,7 +176,7 @@ export function Dashboard() {
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-hidden">
-              <TradesTape trades={trades} />
+              <TradesTape trades={trades} priceDecimals={instrument.priceDecimals} qtyDecimals={instrument.qtyDecimals} />
             </div>
           )}
         </div>

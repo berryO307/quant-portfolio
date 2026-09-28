@@ -7,6 +7,16 @@ const ROW_HEIGHT_PX = 24; // must match TradeRow's h-6
 
 interface TradesTapeProps {
   trades: TimedTrade[]; // newest first
+  // Per-instrument display precision (lib/instruments.ts) -- this
+  // component used to hardcode toFixed(4)/toFixed(3) regardless of which
+  // instrument was selected, which happened to look fine for BTC's old
+  // (wrong) 3-decimal qty scale and for a 4-decimal price, but had nothing
+  // to do with any real instrument's own precision. Same class of bug as
+  // the wire-level QTY_SCALE truncation this was found alongside: real
+  // size data present in the trade record, silently hidden by a fixed
+  // display width that was never actually tied to the instrument.
+  priceDecimals: number;
+  qtyDecimals: number;
 }
 
 // Phase 8.5's third pass: dropped the scroll+virtualization approach for a
@@ -16,7 +26,7 @@ interface TradesTapeProps {
 // container, and only that many (of the newest trades) are ever rendered;
 // useRelayConnection also caps the underlying array itself at MAX_TRADES,
 // well past what any realistic tape height needs.
-export function TradesTape({ trades }: TradesTapeProps) {
+export function TradesTape({ trades, priceDecimals, qtyDecimals }: TradesTapeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleRows, setVisibleRows] = useState(0);
 
@@ -46,7 +56,7 @@ export function TradesTape({ trades }: TradesTapeProps) {
       ) : (
         <div ref={containerRef} className="flex-1 overflow-hidden">
           {visible.map((trade) => (
-            <TradeRow key={trade.trade_id} trade={trade} />
+            <TradeRow key={trade.trade_id} trade={trade} priceDecimals={priceDecimals} qtyDecimals={qtyDecimals} />
           ))}
         </div>
       )}
@@ -54,7 +64,15 @@ export function TradesTape({ trades }: TradesTapeProps) {
   );
 }
 
-function TradeRow({ trade }: { trade: TimedTrade }) {
+function TradeRow({
+  trade,
+  priceDecimals,
+  qtyDecimals,
+}: {
+  trade: TimedTrade;
+  priceDecimals: number;
+  qtyDecimals: number;
+}) {
   const color = trade.side === "bid" ? "text-[#3fb950]" : "text-[#f85149]";
   const date = new Date(trade.receivedAtMs);
   const time =
@@ -62,8 +80,8 @@ function TradeRow({ trade }: { trade: TimedTrade }) {
 
   return (
     <div className="grid h-6 grid-cols-3 items-center gap-2 px-3">
-      <span className={`font-mono tabular-nums ${color}`}>{toPrice(trade.price).toFixed(4)}</span>
-      <span className="text-right font-mono tabular-nums text-foreground">{toQty(trade.qty).toFixed(3)}</span>
+      <span className={`font-mono tabular-nums ${color}`}>{toPrice(trade.price).toFixed(priceDecimals)}</span>
+      <span className="text-right font-mono tabular-nums text-foreground">{toQty(trade.qty).toFixed(qtyDecimals)}</span>
       <span className="text-right font-mono tabular-nums text-muted-foreground">{time}</span>
     </div>
   );

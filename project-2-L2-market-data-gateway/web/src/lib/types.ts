@@ -151,8 +151,11 @@ export function isRelayMessage(value: unknown): value is RelayMessage {
 // Scale factors from the C++ side (types.hpp: PRICE_SCALE, QTY_SCALE) —
 // prices/quantities travel over the wire as scaled integers, same
 // convention as NormalizedTick and everything else in this pipeline.
+// Must match types.hpp exactly -- see that file's own comment for why
+// QTY_SCALE is 1,000,000 (real per-asset size precision, verified against
+// every currently-listed Hyperliquid perp asset, not an arbitrary value).
 export const PRICE_SCALE = 10_000;
-export const QTY_SCALE = 1_000;
+export const QTY_SCALE = 1_000_000;
 
 export function toPrice(scaled: number): number {
   return scaled / PRICE_SCALE;
