@@ -7,6 +7,13 @@ interface FeedStatusBannerProps {
   // — this exists so the day it isn't zero, it's visible here instead of
   // only in the gateway's own console heartbeat log.
   queueOverflowDropped: number;
+  // True when the connected relay's hello declared a different symbol than
+  // this instrument's config expects (useRelayConnection's symbolMismatch)
+  // — e.g. the WTI dropdown entry's port accidentally serving BTC data.
+  // Every instrument is served on its own dedicated relay/port
+  // (lib/instruments.ts), so this should never actually fire; it exists so
+  // a config mistake surfaces here instead of silently mislabeling data.
+  symbolMismatch: boolean;
 }
 
 // The only degraded-state indicator in this app — no replay fallback exists,
@@ -25,10 +32,10 @@ interface FeedStatusBannerProps {
 // permanent line of chrome; every other part of the dashboard already
 // implies it by showing moving data). This component only ever needs to
 // interrupt you when something's actually wrong.
-export function FeedStatusBanner({ wsConnected, healthOk, queueOverflowDropped }: FeedStatusBannerProps) {
+export function FeedStatusBanner({ wsConnected, healthOk, queueOverflowDropped, symbolMismatch }: FeedStatusBannerProps) {
   const isLive = wsConnected && healthOk;
 
-  if (isLive && queueOverflowDropped === 0) {
+  if (isLive && queueOverflowDropped === 0 && !symbolMismatch) {
     return null;
   }
 
@@ -39,6 +46,18 @@ export function FeedStatusBanner({ wsConnected, healthOk, queueOverflowDropped }
         <span className="h-1.5 w-1.5 rounded-full bg-[#f85149]" aria-hidden />
         Live feed unavailable
         <span className="text-muted-foreground">({reason})</span>
+      </div>
+    );
+  }
+
+  // Live but wrong instrument: a config mistake (wrong relay behind this
+  // port), checked first since it means every number on screen is
+  // mislabeled, not just degraded — worse than a dropped-tick count.
+  if (symbolMismatch) {
+    return (
+      <div className="flex items-center gap-2 border-b border-border bg-[#3a1418] px-3 py-1.5 text-xs text-[#f85149]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#f85149]" aria-hidden />
+        Instrument mismatch — this relay is serving a different symbol than expected
       </div>
     );
   }

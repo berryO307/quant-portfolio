@@ -24,7 +24,11 @@ error.log
 # Internal LLM-workflow docs — kept locally for context, not tracked on GitHub.
 # notes/Engineering_Notes.md is NOT here: it's real engineering documentation,
 # cited by name from README.md, not a Claude-workflow artifact.
-/BUGS.md
+# BUGS.md was here too, previously a scratch/local-only log -- removed from
+# this list starting with the cloud-latency/replay-pipeline investigation
+# (project-2-v2.6.0): the root and web READMEs now link to it directly as
+# real documentation, so it has to actually exist in the repo for anyone who
+# clones it, not just locally for whoever wrote it.
 /CLAUDE.md
 /PHASES.md
 /HYPERLIQUID_MIGRATION_PROMPT.md
