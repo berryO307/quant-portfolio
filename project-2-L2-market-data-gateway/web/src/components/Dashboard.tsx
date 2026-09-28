@@ -33,10 +33,19 @@ export function Dashboard() {
     setInstrument(next);
     setBucketSize(defaultBucketSize(next.priceBucketOptions));
   }
-  const { wsConnected, healthOk, cpuGhz, capturedAt, isReplay, latestSnapshot, coarseSnapshots, trades, recentSamples, stats } = useRelayConnection(
-    instrument.relayWsUrl,
-    instrument.relayHealthUrl
-  );
+  const {
+    wsConnected,
+    healthOk,
+    cpuGhz,
+    capturedAt,
+    isReplay,
+    symbolMismatch,
+    latestSnapshot,
+    coarseSnapshots,
+    trades,
+    recentSamples,
+    stats,
+  } = useRelayConnection(instrument.relayWsUrl, instrument.relayHealthUrl, instrument.symbol);
 
   // The order book and depth curve are always built from the gateway's own
   // captured data, never from anything else. Coarser price buckets (e.g.
@@ -83,7 +92,12 @@ export function Dashboard() {
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
       <ReplayIndicator isReplay={isReplay} capturedAt={capturedAt} />
-      <FeedStatusBanner wsConnected={wsConnected} healthOk={healthOk} queueOverflowDropped={queueOverflowDropped} />
+      <FeedStatusBanner
+        wsConnected={wsConnected}
+        healthOk={healthOk}
+        queueOverflowDropped={queueOverflowDropped}
+        symbolMismatch={symbolMismatch}
+      />
 
       {/* Two columns: market data (tabbed) on the left, latency on the
           right (Phase 8.5 — order book and trades used to sit side by side,

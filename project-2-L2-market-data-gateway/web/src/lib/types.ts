@@ -26,6 +26,9 @@ export type Side = "bid" | "ask" | "both" | "none";
 // again.
 export interface SampleRecord {
   type: "sample";
+  // See relay/src/types.ts's SampleRecord.symbol -- same optionality/
+  // rationale, mirrored here verbatim.
+  symbol?: string;
   t_recv: number;
   t_parse: number;
   t_pop?: number;
@@ -45,6 +48,8 @@ export interface SampleRecord {
 
 export interface SnapshotRecord {
   type: "snapshot";
+  // See SampleRecord.symbol's comment.
+  symbol?: string;
   tsc: number;
   // Ordered best-price-first: bids descending (best/highest first), asks
   // ascending (best/lowest first) — see OrderBook::top_bids/top_asks.
@@ -70,6 +75,8 @@ export interface SnapshotRecord {
 // nsigfigs is what tells a viewer's live map of them apart.
 export interface CoarseSnapshotRecord {
   type: "coarse_snapshot";
+  // See SampleRecord.symbol's comment.
+  symbol?: string;
   nsigfigs: number;
   tsc: number;
   bids: [number, number][];
@@ -78,6 +85,8 @@ export interface CoarseSnapshotRecord {
 
 export interface TradeRecord {
   type: "trade";
+  // See SampleRecord.symbol's comment.
+  symbol?: string;
   tsc: number;
   price: number;
   qty: number;
@@ -135,6 +144,14 @@ export interface HelloMessage {
   // a future real-live gateway reconnecting should never need special-
   // casing here just because it happens to share some other field.
   isReplay?: boolean;
+  // Which instrument this connection is carrying (e.g. "BTC" or "xyz:CL")
+  // -- see relay/src/types.ts's HelloMessage.symbol for the full contract.
+  // Every instrument is still served on its own dedicated relay/port (see
+  // lib/instruments.ts), so this doesn't route anything client-side; it's
+  // read by ReplayIndicator/useRelayConnection purely as a ground-truth
+  // label, so a misconfigured port-to-instrument mapping would show up as
+  // a mismatch instead of silently mislabeling data.
+  symbol?: string;
 }
 
 export type RelayMessage =

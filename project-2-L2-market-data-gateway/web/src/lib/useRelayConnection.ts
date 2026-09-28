@@ -58,6 +58,16 @@ export interface RelayState {
   // here. See lib/types.ts's HelloMessage for the full contract.
   capturedAt: number | undefined;
   isReplay: boolean;
+  // True when the connected relay's hello declared a symbol that doesn't
+  // match expectedSymbol (see useRelayConnection's params) -- e.g. WTI's
+  // port serving BTC data because of a config mistake. Every instrument is
+  // still served on its own dedicated relay/port (lib/instruments.ts), so
+  // this can't fix a same-connection collision, but it turns a
+  // misconfiguration that would otherwise silently mislabel data into
+  // something visible. False whenever either side doesn't know its symbol
+  // yet (no hello received, or expectedSymbol not passed) -- absence of
+  // information is not evidence of a mismatch.
+  symbolMismatch: boolean;
   latestSnapshot: SnapshotRecord | null;
   // Wider-rounded books from Hyperliquid's own nSigFigs subscriptions, for
   // price-bucket tiers the primary (finest-rounding) snapshot doesn't have
@@ -76,12 +86,13 @@ export interface RelayState {
 // them, since they're detecting different failure modes: wsConnected false
 // means "can't reach the relay at all"; healthOk false (while wsConnected is
 // true) means "relay is up but has no live upstream gateway data".
-export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState {
+export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSymbol?: string): RelayState {
   const [wsConnected, setWsConnected] = useState(false);
   const [healthOk, setHealthOk] = useState(false);
   const [cpuGhz, setCpuGhz] = useState(DEFAULT_CPU_GHZ);
   const [capturedAt, setCapturedAt] = useState<number | undefined>(undefined);
   const [isReplay, setIsReplay] = useState(false);
+  const [symbolMismatch, setSymbolMismatch] = useState(false);
   const [latestSnapshot, setLatestSnapshot] = useState<SnapshotRecord | null>(null);
   // A plain object, not a Map, in state -- an object's identity is easy to
   // refresh immutably on every update (spread into a new one), which is
@@ -101,6 +112,13 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
   // using whatever cpu_ghz is current, without recreating the closure every
   // time a hello message updates it.
   const cpuGhzRef = useRef(DEFAULT_CPU_GHZ);
+  // Read inside the onmessage closure the same way cpuGhzRef is -- avoids
+  // recreating connect() (and therefore the WebSocket) on every render just
+  // because the caller passed a fresh string with the same value.
+  const expectedSymbolRef = useRef(expectedSymbol);
+  useEffect(() => {
+    expectedSymbolRef.current = expectedSymbol;
+  }, [expectedSymbol]);
   const pendingSamplesRef = useRef<LiveSample[]>([]);
   // Indirection so scheduleReconnect can call "the current connect" without
   // referencing the connect binding from inside its own initializer (which
@@ -144,6 +162,7 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
     // never something rendered directly at the user like a capture date.
     setCapturedAt(undefined);
     setIsReplay(false);
+    setSymbolMismatch(false);
     // pendingSamplesRef (the rAF flush buffer below) is deliberately left
     // alone — it holds at most one animation frame's worth of not-yet-
     // flushed samples, mutating a ref during render isn't allowed here
@@ -185,12 +204,21 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
       if (!isRelayMessage(parsed)) return;
 
       switch (parsed.type) {
-        case "hello":
+        case "hello": {
           cpuGhzRef.current = parsed.cpu_ghz;
           setCpuGhz(parsed.cpu_ghz);
           setCapturedAt(parsed.capturedAt);
           setIsReplay(parsed.isReplay ?? false);
+          const expected = expectedSymbolRef.current;
+          const mismatch = expected != null && parsed.symbol != null && parsed.symbol !== expected;
+          if (mismatch) {
+            console.warn(
+              `[useRelayConnection] symbol mismatch: expected "${expected}" but relay hello declared "${parsed.symbol}" (wsUrl=${wsUrl})`
+            );
+          }
+          setSymbolMismatch(mismatch);
           break;
+        }
         case "snapshot":
           setLatestSnapshot(parsed);
           break;
@@ -297,5 +325,17 @@ export function useRelayConnection(wsUrl: string, healthUrl: string): RelayState
     [coarseSnapshotsByTier]
   );
 
-  return { wsConnected, healthOk, cpuGhz, capturedAt, isReplay, latestSnapshot, coarseSnapshots, trades, recentSamples, stats };
+  return {
+    wsConnected,
+    healthOk,
+    cpuGhz,
+    capturedAt,
+    isReplay,
+    symbolMismatch,
+    latestSnapshot,
+    coarseSnapshots,
+    trades,
+    recentSamples,
+    stats,
+  };
 }
