@@ -1,4 +1,4 @@
-import { RELAY_HEALTH_URL, RELAY_WS_URL } from "./config";
+import { RELAY_CL_HEALTH_URL, RELAY_CL_WS_URL, RELAY_HEALTH_URL, RELAY_WS_URL } from "./config";
 
 // Instrument shortlist for the dropdown (Hyperliquid migration, see
 // HYPERLIQUID_MIGRATION_PROMPT.md at the project root for the research this
@@ -126,7 +126,7 @@ export const INSTRUMENTS: InstrumentConfig[] = [
     label: "WTI Crude Oil (Hyperliquid xyz)",
     symbol: "xyz:CL",
     shortLabel: "WTI",
-    ...relayUrls(8085),
+    ...relayUrls(8085, RELAY_CL_WS_URL, RELAY_CL_HEALTH_URL),
     priceDecimals: 3,
     qtyDecimals: 2,
     priceBucketOptions: [0.001, 0.01, 0.1, 1],
