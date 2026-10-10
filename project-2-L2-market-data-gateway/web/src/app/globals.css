@@ -503,6 +503,24 @@
   animation: tf-live-pulse 1.8s ease-in-out infinite;
 }
 
+/* LiveReplayToggle's status dot (both the sidebar row and the compact rail
+   badge) — breathing box-shadow glow for whichever mode (live/replay) is
+   the ACTUALLY connected one, so "on air" reads as alive rather than a
+   static colored dot. Color comes from --tf-dot-glow, set inline per
+   instance (red for live, brand-blue for replay) so one animation serves
+   both — see LiveReplayToggle.tsx's StatusDot/CompactModeButton. */
+@keyframes tf-dot-glow {
+  0%, 100% { box-shadow: 0 0 4px 1px color-mix(in srgb, var(--tf-dot-glow) 60%, transparent); }
+  50%      { box-shadow: 0 0 10px 3px color-mix(in srgb, var(--tf-dot-glow) 100%, transparent); }
+}
+.tf-dot-glow {
+  /* Matches the animation's brighter keyframe — reduced-motion below
+     disables the pulse but keeps this as a static glow, same "solid line,
+     not invisible" treatment .tf-comet/.tf-arrow-pulse already use. */
+  box-shadow: 0 0 10px 3px color-mix(in srgb, var(--tf-dot-glow) 100%, transparent);
+  animation: tf-dot-glow 1.8s ease-in-out infinite;
+}
+
 /* React Flow's <Controls /> (architecture page): the library exposes these
    as real CSS custom properties specifically so a host app can theme them
    without !important — every button style resolves as
@@ -685,6 +703,7 @@
   .tf-shimmer,
   .tf-emoji-avatar,
   .tf-live-dot,
+  .tf-dot-glow,
   .tf-bar-1,
   .tf-bar-2,
   .tf-bar-3,

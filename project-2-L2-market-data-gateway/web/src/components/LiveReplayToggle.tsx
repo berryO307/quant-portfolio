@@ -103,7 +103,7 @@ export function LiveReplayToggle({
             {capturedCaption}
           </span>
         ) : (
-          <span>{actualMode === mode ? "connected" : "not connected"}</span>
+          <span>{actualMode === mode ? "Connected" : "Not connected"}</span>
         )}
       </div>
     </div>
@@ -129,12 +129,19 @@ function StatusDot({ mode, active }: { mode: FeedMode; active: boolean }) {
   if (mode === "live") {
     return (
       <span
-        className="h-1.5 w-1.5 shrink-0 rounded-full bg-red-500 shadow-[0_0_5px_1.5px_rgba(239,68,68,0.75)]"
+        className="tf-dot-glow h-1.5 w-1.5 shrink-0 rounded-full bg-red-500"
+        style={{ "--tf-dot-glow": "#ef4444" } as React.CSSProperties}
         aria-hidden
       />
     );
   }
-  return <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-brand-blue" aria-hidden />;
+  return (
+    <span
+      className="tf-dot-glow h-1.5 w-1.5 shrink-0 rounded-full bg-brand-blue"
+      style={{ "--tf-dot-glow": "var(--brand-blue)" } as React.CSSProperties}
+      aria-hidden
+    />
+  );
 }
 
 function ModeButton({
@@ -200,11 +207,10 @@ function CompactModeButton({
         <Icon className="h-[18px] w-[18px]" />
         {active && (
           <span
-            className={`absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ${
-              label === "Live"
-                ? "bg-red-500 shadow-[0_0_4px_1px_rgba(239,68,68,0.8)]"
-                : "bg-brand-blue"
+            className={`tf-dot-glow absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ${
+              label === "Live" ? "bg-red-500" : "bg-brand-blue"
             }`}
+            style={{ "--tf-dot-glow": label === "Live" ? "#ef4444" : "var(--brand-blue)" } as React.CSSProperties}
             aria-hidden
           />
         )}
