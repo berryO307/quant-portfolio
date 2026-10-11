@@ -1,19 +1,27 @@
 // Container entrypoint for a hosted relay (Railway).
 //
-// Runs the relay, and -- when DATABASE_URL and REPLAY_SYMBOL are both set --
-// replay-gateway-neon.mjs alongside it, looping a captured session out of
-// Neon into the relay's own /ingest. They have to share one container:
-// replay-gateway-neon.mjs connects to ws://localhost:<PORT>/ingest, and a
-// platform service gets one public port, so a separate service could not
-// reach it.
+// Runs ONE relay serving every instrument in SYMBOLS (comma-separated, e.g.
+// "BTC,xyz:CL"), and -- when DATABASE_URL is set -- one
+// replay-gateway-neon.mjs per symbol, each looping that instrument's
+// captured session out of Neon into the relay's /ingest. The relay routes
+// each replay to its own channel by the symbol in its hello.
 //
-// Without those two vars only the relay runs, waiting for a gateway to push
-// into /ingest (e.g. the C++ gateway on a self-hosted box later). Set
-// INGEST_TOKEN on any public deployment; the replay child inherits it.
+// The replays share this container because they connect to
+// ws://localhost:<PORT>/ingest; a separate service would need the public
+// URL and would pay egress for a feed that never needs to leave the box.
+//
+// One child process per symbol: a replay that crashes (or whose Neon query
+// fails) is restarted on its own, without touching the relay or the other
+// instruments. The cost is one Node runtime (~tens of MB) per symbol --
+// fine for a handful, and the point at which to move all replays into one
+// process if this ever carries hundreds.
+//
+// Without DATABASE_URL only the relay runs, waiting for live gateways to
+// push into /ingest. Set INGEST_TOKEN on any public deployment; every
+// child inherits it.
 //
 // Relay exit -> this process exits with the same code so the platform
-// restarts the container. Replay exit -> restarted after a delay, without
-// taking down the relay clients are connected to.
+// restarts the container. Replay exit -> that replay alone restarts.
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -21,7 +29,10 @@ import path from "node:path";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const relayRoot = path.resolve(here, "..");
 const PORT = process.env.PORT ?? "8080";
-const SYMBOL = process.env.REPLAY_SYMBOL;
+const SYMBOLS = (process.env.SYMBOLS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 const REPLAY_RESTART_MS = 5_000;
 
 const children = new Set();
@@ -42,8 +53,8 @@ relay.on("exit", (code, signal) => {
 });
 
 async function waitForRelay() {
-  // /health answers 503 until an upstream connects -- any HTTP response
-  // means the relay is listening, which is all the replay needs.
+  // /health answers 503 until every feed connects -- any HTTP response
+  // means the relay is listening, which is all a replay needs.
   for (;;) {
     try {
       await fetch(`http://localhost:${PORT}/health`);
@@ -54,19 +65,19 @@ async function waitForRelay() {
   }
 }
 
-function startReplay() {
-  const replay = run(`replay (${SYMBOL})`, ["scripts/replay-gateway-neon.mjs", `--symbol=${SYMBOL}`, PORT, "--loop"]);
+function startReplay(symbol) {
+  const replay = run(`replay (${symbol})`, ["scripts/replay-gateway-neon.mjs", `--symbol=${symbol}`, PORT, "--loop"]);
   replay.on("exit", (code) => {
-    console.error(`[start] replay exited (code=${code}); restarting in ${REPLAY_RESTART_MS}ms`);
-    setTimeout(startReplay, REPLAY_RESTART_MS);
+    console.error(`[start] replay ${symbol} exited (code=${code}); restarting in ${REPLAY_RESTART_MS}ms`);
+    setTimeout(() => startReplay(symbol), REPLAY_RESTART_MS);
   });
 }
 
-if (process.env.DATABASE_URL && SYMBOL) {
+if (process.env.DATABASE_URL && SYMBOLS.length > 0) {
   await waitForRelay();
-  startReplay();
+  for (const symbol of SYMBOLS) startReplay(symbol);
 } else {
-  console.log("[start] DATABASE_URL/REPLAY_SYMBOL not set -- relay only, waiting for a gateway on /ingest");
+  console.log("[start] DATABASE_URL or SYMBOLS not set -- relay only, waiting for gateways on /ingest");
 }
 
 for (const sig of ["SIGTERM", "SIGINT"]) {

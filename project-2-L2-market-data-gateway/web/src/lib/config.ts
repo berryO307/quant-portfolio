@@ -1,27 +1,24 @@
 // Relay endpoint configuration. Must be NEXT_PUBLIC_* to reach the browser
 // bundle (this app connects to the relay directly from the client — Vercel
 // doesn't run a persistent WS server for us, and doesn't need to: the relay
-// is the always-on piece, not this app). Defaults target a local relay
-// instance (see relay/src/index.ts, default port 8080).
+// is the always-on piece, not this app).
+//
+// ONE relay serves every instrument (relay/src/server.ts), so the app needs
+// one base URL and derives each instrument's endpoints from its symbol.
+// Adding an instrument is an entry in lib/instruments.ts -- no new env var,
+// relay, port or deployment.
+//
+// http:// or https://, no trailing slash. The WebSocket URL is derived from
+// it (https -> wss) so the two can never point at different hosts.
+const RELAY_URL = (process.env.NEXT_PUBLIC_RELAY_URL ?? "http://localhost:8080").replace(/\/+$/, "");
+const RELAY_WS_BASE = RELAY_URL.replace(/^http/, "ws");
 
-export const RELAY_WS_URL =
-  process.env.NEXT_PUBLIC_RELAY_WS_URL ?? "ws://localhost:8080/live";
+// Symbols contain ":" (builder sub-dex coins like "xyz:CL"), so they're
+// URL-encoded; the relay decodes them back.
+export function relayLiveUrl(symbol: string): string {
+  return `${RELAY_WS_BASE}/live?symbol=${encodeURIComponent(symbol)}`;
+}
 
-export const RELAY_HEALTH_URL =
-  process.env.NEXT_PUBLIC_RELAY_HEALTH_URL ?? "http://localhost:8080/health";
-
-// Second instrument (WTI / xyz:CL). Unset locally, so it falls back to the
-// localhost:8085 relay in instruments.ts. On a hosted deploy it must be set:
-// left at localhost, a visitor's browser would try its OWN machine.
-export const RELAY_CL_WS_URL = process.env.NEXT_PUBLIC_RELAY_CL_WS_URL;
-export const RELAY_CL_HEALTH_URL = process.env.NEXT_PUBLIC_RELAY_CL_HEALTH_URL;
-
-// Which instrument each relay endpoint is actually serving is NOT wired to
-// the wire protocol at all — it never carries a symbol (see
-// relay/src/types.ts; SampleRecord/SnapshotRecord/TradeRecord are all
-// symbol-agnostic) — so lib/instruments.ts's INSTRUMENTS list is a
-// standalone assumption that must be kept in sync with whichever gateway
-// process is actually feeding each relay port. RELAY_WS_URL/
-// RELAY_HEALTH_URL above configure ONLY the first (BTC via Hyperliquid,
-// the default instrument) entry in that list — the rest use fixed
-// localhost ports (see instruments.ts).
+export function relayHealthUrl(symbol: string): string {
+  return `${RELAY_URL}/health?symbol=${encodeURIComponent(symbol)}`;
+}

@@ -1,4 +1,3 @@
-import { RELAY_CL_HEALTH_URL, RELAY_CL_WS_URL, RELAY_HEALTH_URL, RELAY_WS_URL } from "./config";
 
 // Instrument shortlist for the dropdown (Hyperliquid migration, see
 // HYPERLIQUID_MIGRATION_PROMPT.md at the project root for the research this
@@ -76,39 +75,26 @@ export interface InstrumentConfig {
   // the full `label` or wire `symbol` ("xyz:CL") would overflow/read oddly
   // — e.g. "Size (xyz:CL)" vs. "Size (WTI)".
   shortLabel: string;
-  relayWsUrl: string;
-  relayHealthUrl: string;
   priceDecimals: number;
   qtyDecimals: number;
   priceBucketOptions: readonly number[];
 }
 
-// Sequential local ports starting from the project's existing default
-// (8080 — previously Bybit BTCUSDT, now BTC via Hyperliquid, so
-// NEXT_PUBLIC_RELAY_WS_URL/NEXT_PUBLIC_RELAY_HEALTH_URL continue to
-// override that one default instrument). The rest are fixed localhost
-// ports, not individually env-overridable — this is a local
-// multi-instrument dev/demo tool, not a deployment with N independently
-// configurable prod endpoints.
-function relayUrls(port: number, overrideWs?: string, overrideHealth?: string) {
-  return {
-    relayWsUrl: overrideWs ?? `ws://localhost:${port}/live`,
-    relayHealthUrl: overrideHealth ?? `http://localhost:${port}/health`,
-  };
-}
-
-// Only the two instruments actually running a live gateway (see
-// relay/scripts/run-live-forever.sh) are listed — ETH/SOL/XRP/HYPE/Brent
-// were never wired to a real live source (BUGS.md's "always shows feed
-// unavailable" case), so keeping them in the dropdown just offered a dead
-// end. Add an entry back here once its own gateway is actually running.
+// Relay endpoints are NOT stored here: one relay serves every instrument,
+// and each instrument's URLs come from its symbol (see lib/config.ts's
+// relayLiveUrl/relayHealthUrl). An entry is pure display metadata, so
+// adding an instrument means adding an entry here and a feed for its
+// symbol -- nothing else.
+//
+// Only instruments with a real feed are listed -- ETH/SOL/XRP/HYPE/Brent
+// were never wired to one (BUGS.md's "always shows feed unavailable"
+// case), so keeping them in the dropdown just offered a dead end.
 export const INSTRUMENTS: InstrumentConfig[] = [
   {
     id: "btc-hl",
     label: "BTC (Hyperliquid)",
     symbol: "BTC",
     shortLabel: "BTC",
-    ...relayUrls(8080, RELAY_WS_URL, RELAY_HEALTH_URL),
     priceDecimals: 2,
     // 5, not 3 -- BTC's real Hyperliquid szDecimals is 5 (verified via
     // their own metaAndAssetCtxs API). At the old qtyDecimals=3 this was
@@ -126,7 +112,6 @@ export const INSTRUMENTS: InstrumentConfig[] = [
     label: "WTI Crude Oil (Hyperliquid xyz)",
     symbol: "xyz:CL",
     shortLabel: "WTI",
-    ...relayUrls(8085, RELAY_CL_WS_URL, RELAY_CL_HEALTH_URL),
     priceDecimals: 3,
     qtyDecimals: 2,
     priceBucketOptions: [0.001, 0.01, 0.1, 1],

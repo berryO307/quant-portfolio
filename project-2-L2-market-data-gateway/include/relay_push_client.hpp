@@ -52,8 +52,10 @@ public:
     // handshake exactly as replay-gateway.mjs and the relay's own
     // HelloMessage contract (relay/src/types.ts) expect.
     // token: optional shared secret, mirrors the relay's INGEST_TOKEN env var.
+    // symbol: the instrument this process captures -- the relay serves many
+    // instruments and routes a feed to its channel by this hello field.
     RelayPushClient(std::string host, std::string port, double cpu_ghz,
-                     std::optional<std::string> token);
+                     std::optional<std::string> token, std::string symbol);
     ~RelayPushClient();
 
     RelayPushClient(const RelayPushClient&)            = delete;
@@ -84,6 +86,7 @@ private:
     std::string  port_;
     double       cpu_ghz_;
     std::optional<std::string> token_;
+    std::string  symbol_;
     RelayPushRing ring_;
     std::atomic<bool>    running_;
     std::atomic<uint64_t> dropped_{0};

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# scripts/dev-up.sh — bring up the whole local stack: both relays (:8080
-# BTC, :8085 xyz:CL), the web viewer (:3000), and both gateway processes.
+# scripts/dev-up.sh — bring up the whole local stack: one relay (:8080,
+# serving every instrument), the web viewer (:3000), and both gateway
+# processes (BTC, xyz:CL), which the relay tells apart by their hello.
 # Idempotent: anything already listening/running is left alone, not
 # restarted. Real Win32 PIDs of whatever THIS script starts are recorded in
 # .run/ so dev-down.sh can stop exactly those and nothing else.
@@ -98,17 +99,12 @@ if [ ! -f "$ROOT/build/quant_day1.exe" ]; then
 fi
 
 if port_listening 8080; then
-  echo "[dev-up] relay :8080 (BTC) already up — leaving it alone"
+  echo "[dev-up] relay :8080 already up — leaving it alone"
 else
-  start_bg "relay :8080 (BTC)" "$ROOT/relay" node.exe "$RUN_DIR/relay-8080.log" "$RUN_DIR/relay-8080.pid" 8080 \
-    npm run dev
-fi
-
-if port_listening 8085; then
-  echo "[dev-up] relay :8085 (xyz:CL) already up — leaving it alone"
-else
-  start_bg "relay :8085 (xyz:CL)" "$ROOT/relay" node.exe "$RUN_DIR/relay-8085.log" "$RUN_DIR/relay-8085.pid" 8085 \
-    env PORT=8085 npm run dev
+  # SYMBOLS pre-declares the channels so the web viewer can connect before
+  # the gateways finish starting up.
+  start_bg "relay :8080" "$ROOT/relay" node.exe "$RUN_DIR/relay-8080.log" "$RUN_DIR/relay-8080.pid" 8080 \
+    env SYMBOLS="BTC,xyz:CL" npm run dev
 fi
 
 if port_listening 3000; then
@@ -140,8 +136,8 @@ else
   start_bg "gateway BTC -> :8080" "$RUN_DIR/btc" quant_day1.exe "$RUN_DIR/gateway-btc.log" "$RUN_DIR/gateway-btc.pid" "" \
     env RELAY_WS_PORT=8080 "$ROOT/build/quant_day1.exe" "$RUN_MINUTES" BTC
 
-  start_bg "gateway xyz:CL -> :8085" "$RUN_DIR/cl" quant_day1.exe "$RUN_DIR/gateway-cl.log" "$RUN_DIR/gateway-cl.pid" "" \
-    env RELAY_WS_PORT=8085 "$ROOT/build/quant_day1.exe" "$RUN_MINUTES" "xyz:CL"
+  start_bg "gateway xyz:CL -> :8080" "$RUN_DIR/cl" quant_day1.exe "$RUN_DIR/gateway-cl.log" "$RUN_DIR/gateway-cl.pid" "" \
+    env RELAY_WS_PORT=8080 "$ROOT/build/quant_day1.exe" "$RUN_MINUTES" "xyz:CL"
 fi
 
 if [ "$FAILED" -ne 0 ]; then

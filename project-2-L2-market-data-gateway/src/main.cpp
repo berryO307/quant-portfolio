@@ -844,7 +844,7 @@ int main(int argc, char* argv[]) {
         // this codebase already follow. A stack-local version of this crashed
         // with STATUS_STACK_OVERFLOW immediately on startup — confirmed, not
         // theoretical.
-        relay_push = std::make_unique<RelayPushClient>(relay_host, relay_port, host_ghz, relay_token);
+        relay_push = std::make_unique<RelayPushClient>(relay_host, relay_port, host_ghz, relay_token, symbol);
         std::cout << "[main] relay push -> ws://" << relay_host << ":" << relay_port << "/ingest\n";
     } else {
         std::cout << "[main] relay push disabled (no --relay-url/--relay-token or "

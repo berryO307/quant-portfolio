@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
 import type { DataSource, DataSourceEvents } from "./dataSource.js";
-import { isHelloMessage, isIngestRecord } from "./types.js";
+import { isHelloMessage, isIngestRecord, type HelloMessage } from "./types.js";
 
 // Default calibrated TSC frequency, used until a real hello handshake
 // arrives. Matches the existing default in analysis/reader.py and
@@ -21,9 +21,10 @@ const MAX_MISSED_PONGS = 2; // dead after 30s of silence
 // Role reversal vs. a typical "ingest client": the GATEWAY is the one that
 // makes the outbound connection (it's the ephemeral, per-session process);
 // this relay is the always-on side, so it runs the WebSocket *server* for
-// this one upstream connection. handleConnection() is called by the
-// composition root (index.ts) whenever a new connection arrives on the
-// ingest path — this class doesn't own HTTP routing.
+// this one upstream connection. One instance exists per instrument (see
+// channel.ts). attach() is called by the router (server.ts) only after it
+// has read the connection's hello, checked its token, and used its symbol
+// to pick this instance -- this class owns neither routing nor auth.
 //
 // Reconnect contract (see Phase 6 explanation): only one upstream connection
 // is considered current at a time. If a new one arrives while an old one is
@@ -41,16 +42,6 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
   private lastCapturedAt: number | undefined;
   private lastIsReplay = false;
   private lastSymbol: string | undefined;
-
-  // ingestToken: when set (INGEST_TOKEN env var in production — see
-  // relay/README.md), a connecting client must prove it knows this value in
-  // its hello message before it's treated as the upstream gateway. Without
-  // this, /ingest is open to anyone who finds the URL, who could otherwise
-  // inject arbitrary fake market data to every connected viewer. undefined
-  // (the local-dev default) preserves the original open behavior exactly.
-  constructor(private readonly ingestToken?: string) {
-    super();
-  }
 
   isConnected(): boolean {
     return this.socket !== null && this.socket.readyState === this.socket.OPEN;
@@ -72,52 +63,29 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
     return this.lastSymbol;
   }
 
-  handleConnection(ws: WebSocket): void {
-    if (!this.ingestToken) {
-      this.promote(ws);
-      ws.on("message", (data) => this.handleMessage(data));
-      ws.on("close", () => this.handleDisconnect(ws));
-      ws.on("error", () => this.handleDisconnect(ws));
-      return;
-    }
+  // `hello` is the connection's already-consumed first message, validated by
+  // the router. Applying it here (rather than waiting for it as the first
+  // "message") is what lets the router read it to choose the channel
+  // without this class ever seeing the socket before that decision.
+  attach(ws: WebSocket, hello: HelloMessage): void {
+    this.promote(ws);
+    this.applyHello(hello);
+    ws.on("message", (data) => this.handleMessage(data));
+    // "close" always follows "error" for a ws connection, so this is the
+    // one disconnect path.
+    ws.on("close", () => this.handleDisconnect(ws));
+  }
 
-    // Token required: this connection is on PROBATION until its first
-    // message proves itself a hello with a matching token — it must not
-    // supersede the current upstream connection before then (see promote()),
-    // or any client could disconnect the real gateway just by opening a
-    // socket, without ever needing to know the token.
-    ws.on("error", () => {}); // swallow — a rejected/never-authenticated socket has no disconnect handler to run
-    ws.once("message", (data) => {
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(String(data));
-      } catch {
-        ws.terminate();
-        return;
-      }
-      if (!isHelloMessage(parsed) || parsed.token !== this.ingestToken) {
-        ws.terminate();
-        return;
-      }
-
-      this.promote(ws);
-      this.lastCpuGhz = parsed.cpu_ghz;
-      this.lastCapturedAt = parsed.capturedAt;
-      this.lastIsReplay = parsed.isReplay ?? false;
-      this.lastSymbol = parsed.symbol;
-      this.emit("connected", {
-        cpuGhz: this.lastCpuGhz,
-        capturedAt: this.lastCapturedAt,
-        isReplay: this.lastIsReplay,
-        symbol: this.lastSymbol,
-      });
-
-      ws.on("message", (data2) => this.handleMessage(data2));
-      // "close" always follows "error" for a ws connection, so relying on
-      // just this is sufficient now that this socket is promoted — the
-      // swallow-error listener registered above stays attached too
-      // (harmless no-op alongside this).
-      ws.on("close", () => this.handleDisconnect(ws));
+  private applyHello(hello: HelloMessage): void {
+    this.lastCpuGhz = hello.cpu_ghz;
+    this.lastCapturedAt = hello.capturedAt;
+    this.lastIsReplay = hello.isReplay ?? false;
+    this.lastSymbol = hello.symbol;
+    this.emit("connected", {
+      cpuGhz: this.lastCpuGhz,
+      capturedAt: this.lastCapturedAt,
+      isReplay: this.lastIsReplay,
+      symbol: this.lastSymbol,
     });
   }
 
@@ -144,16 +112,12 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
     }
 
     if (isHelloMessage(parsed)) {
-      this.lastCpuGhz = parsed.cpu_ghz;
-      this.lastCapturedAt = parsed.capturedAt;
-      this.lastIsReplay = parsed.isReplay ?? false;
-      this.lastSymbol = parsed.symbol;
-      this.emit("connected", {
-        cpuGhz: this.lastCpuGhz,
-        capturedAt: this.lastCapturedAt,
-        isReplay: this.lastIsReplay,
-        symbol: this.lastSymbol,
-      });
+      // A replay re-sends hello at the start of every loop pass. It can't
+      // re-route the connection (the channel was chosen at attach time),
+      // so a later hello naming a different (or no) symbol is ignored rather
+      // than silently relabelling this channel.
+      if (parsed.symbol !== this.lastSymbol) return;
+      this.applyHello(parsed);
       return;
     }
 

@@ -20,9 +20,9 @@ namespace websocket = beast::websocket;
 using     tcp       = net::ip::tcp;
 
 RelayPushClient::RelayPushClient(std::string host, std::string port, double cpu_ghz,
-                                  std::optional<std::string> token)
+                                  std::optional<std::string> token, std::string symbol)
     : host_(std::move(host)), port_(std::move(port)), cpu_ghz_(cpu_ghz),
-      token_(std::move(token)), running_(true) {
+      token_(std::move(token)), symbol_(std::move(symbol)), running_(true) {
     thread_ = std::thread([this]() { run(); });
 }
 
@@ -104,7 +104,11 @@ void RelayPushClient::connect_and_send() {
     // relay/src/types.ts's isHelloMessage(). token is only meaningful when
     // the relay was started with INGEST_TOKEN set; omitted entirely
     // otherwise (the relay ignores the field when no token is configured).
-    std::string hello = "{\"type\":\"hello\",\"cpu_ghz\":" + std::to_string(cpu_ghz_);
+    // symbol is required by the relay's router (it picks the instrument
+    // channel from it). Hyperliquid coin names ("BTC", "xyz:CL") need no
+    // JSON escaping.
+    std::string hello = "{\"type\":\"hello\",\"cpu_ghz\":" + std::to_string(cpu_ghz_)
+                      + ",\"symbol\":\"" + symbol_ + "\"";
     if (token_) hello += ",\"token\":\"" + *token_ + "\"";
     hello += "}";
     beast::get_lowest_layer(ws).expires_after(std::chrono::seconds(10));
