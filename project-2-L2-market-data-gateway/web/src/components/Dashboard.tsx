@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { useRelayConnection } from "@/lib/useRelayConnection";
-import { INSTRUMENTS, defaultBucketSize } from "@/lib/instruments";
+import { defaultBucketSize, orderbookHref, type InstrumentConfig } from "@/lib/instruments";
 import { relayHealthUrl, relayLiveUrl } from "@/lib/config";
 import { pickBestSnapshot } from "@/lib/orderBook";
 import { useFeedModeState } from "@/lib/feedModeState";
@@ -16,14 +17,13 @@ import { InstrumentSelect } from "./InstrumentSelect";
 
 type LeftTab = "orderbook" | "trades";
 
-export function Dashboard() {
-  const [instrument, setInstrument] = useState(INSTRUMENTS[0]);
+export function Dashboard({ instrument }: { instrument: InstrumentConfig }) {
+  const router = useRouter();
   // Owned here, not by OrderBookLadder/DepthCurve individually — one price
   // bucket applies to both at once (they show the same book), matching
   // Hyperliquid's own UI, which has a single selector, not two independent
-  // ones. Reset alongside the instrument switch itself (not a separate
-  // effect/render-diff trick) since this is the one place that already
-  // knows exactly when that switch happens.
+  // ones. Starts fresh per instrument: the page remounts this component on
+  // every instrument switch (see app/orderbook/page.tsx).
   //
   // defaultBucketSize (lib/instruments.ts), not priceBucketOptions[0] (the
   // absolute finest option) — starting at the finest bucket gave BTC a
@@ -31,21 +31,20 @@ export function Dashboard() {
   // is thin the same way; a middle-of-the-list bucket is a reasonable
   // starting view for any instrument without this component needing to
   // know its price magnitude or tick size.
-  const [bucketSize, setBucketSize] = useState<number>(defaultBucketSize(INSTRUMENTS[0]!.priceBucketOptions));
+  const [bucketSize, setBucketSize] = useState<number>(defaultBucketSize(instrument.priceBucketOptions));
   // null = no explicit choice yet -- the toggle then AUTO-FOLLOWS whichever
   // mode the relay's real upstream actually is (see the derived
   // `feedMode` below), which is what makes "whichever mode is actually
   // available becomes the default" true without hardcoding a default per
-  // instrument/deployment. Reset to null on every instrument switch, same
-  // reasoning as useRelayConnection's own capturedAt/isReplay reset: BTC
-  // and WTI are independent connections that can honestly be in different
+  // instrument/deployment. Starts at null for every instrument (remount):
+  // BTC and WTI are independent channels that can honestly be in different
   // states, and a "Live" pick made for one has no business silently
   // carrying over and showing a coming-soon card for the other.
   const [userFeedMode, setUserFeedMode] = useState<FeedMode | null>(null);
-  function handleInstrumentChange(next: (typeof INSTRUMENTS)[number]) {
-    setInstrument(next);
-    setBucketSize(defaultBucketSize(next.priceBucketOptions));
-    setUserFeedMode(null);
+  // Switching instrument is navigation: it writes ?symbol= into the URL and
+  // the page renders the matching instrument (push, so Back undoes it).
+  function handleInstrumentChange(next: InstrumentConfig) {
+    router.push(orderbookHref(next.symbol), { scroll: false });
   }
   const {
     wsConnected,
@@ -263,7 +262,6 @@ export function Dashboard() {
         <div className="order-1 flex min-h-[680px] flex-col overflow-hidden lg:order-2 lg:min-h-0">
           <div className="min-h-0 flex-1 overflow-hidden">
             <LatencyPanel
-            recentSamples={recentSamples} 
             cpuGhz={cpuGhz}
             stats={stats}
              />

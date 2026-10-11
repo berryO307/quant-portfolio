@@ -5,6 +5,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
+import { orderbookHref } from "@/lib/instruments";
+
 import {
   faceFor,
   loadOrCreateCodename,
@@ -28,7 +30,7 @@ import { LiveReplayToggle } from "./LiveReplayToggle";
  */
 
 const NAV_ITEMS = [
-  { href: "/orderbook", label: "Order Book", icon: BookIcon },
+  { href: orderbookHref(), label: "Order Book", icon: BookIcon },
   { href: "/architecture", label: "System Architecture", icon: DiagramIcon },
 ] as const;
 
@@ -219,7 +221,7 @@ export function Sidebar() {
             state as before. */}
         <nav className="flex flex-col gap-1 px-2 pt-2 md:pt-2">
           {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
-            const active = pathname === href;
+            const active = pathname === href.split("?")[0]; // pathname never includes the query
             return (
               <Link
                 key={href}

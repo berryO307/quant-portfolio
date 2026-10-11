@@ -100,14 +100,19 @@ export class RollingStatsAggregator {
     if (record.t_pop === undefined) return;
 
     const cpuGhz = this.source.cpuGhz();
-    const latencyNs = (record.t_publish - record.t_recv) / cpuGhz;
-    const totalNs = (record.t_publish - record.t_recv) / cpuGhz;
     // t_parse_begin falls back to t_recv for a pre-existing gateway/relay
     // that predates it — reproduces the old conflated "parse" (cumulative
     // through this tick's batch position) with inFrameNs correctly at 0,
     // same fallback useRelayConnection.ts uses client-side. See
     // SampleRecord's own comment and Engineering_Notes.md §11.6.
     const parseBegin = record.t_parse_begin ?? record.t_recv;
+    // Total = the four pipeline stages the gateway executes (parse ->
+    // publish). In-frame wait (t_recv -> t_parse_begin, a batched tick
+    // waiting behind its siblings in one frame) is excluded from every
+    // reported figure; it's typically under 10us and was skewing the
+    // percentiles. Same definition as useRelayConnection.ts.
+    const latencyNs = (record.t_publish - parseBegin) / cpuGhz;
+    const totalNs = latencyNs;
     const inFrameNs = (parseBegin - record.t_recv) / cpuGhz;
     const parseNs = (record.t_parse - parseBegin) / cpuGhz;
     const queueNs = (record.t_pop - record.t_parse) / cpuGhz;
