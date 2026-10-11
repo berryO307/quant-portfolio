@@ -16,8 +16,14 @@ if (invalid.length > 0) {
   process.exit(1);
 }
 
+// Comma-separated, e.g. "https://app.vercel.app,http://localhost:3000".
+const corsOrigins = (process.env.CORS_ORIGIN ?? "*")
+  .split(",")
+  .map((s) => s.trim().replace(/\/+$/, ""))
+  .filter(Boolean);
+
 const relay = createRelay({
-  corsOrigin: process.env.CORS_ORIGIN ?? "*",
+  corsOrigins,
   maxClients: Number(process.env.MAX_CLIENTS ?? 500),
   maxChannels: Number(process.env.MAX_CHANNELS ?? 256),
   ingestToken: process.env.INGEST_TOKEN, // undefined = open /ingest, the local-dev default

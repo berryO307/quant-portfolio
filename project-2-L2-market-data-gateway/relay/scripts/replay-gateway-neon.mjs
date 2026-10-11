@@ -44,6 +44,7 @@ if (!SYMBOL || !process.env.DATABASE_URL) {
 const PORT = Number(portArg ?? process.env.PORT ?? 8080);
 const INGEST_TOKEN = process.env.INGEST_TOKEN;
 const MAX_GAP_MS = 2_000; // see replay-gateway.mjs's own comment on this constant
+const RETRY_MS = 5_000;
 
 const sql = neon(process.env.DATABASE_URL);
 
@@ -141,26 +142,46 @@ async function main() {
     process.exit(1);
   }
 
-  const gw = new WebSocket(`ws://localhost:${PORT}/ingest`);
+  // One socket per connection attempt. With --loop, a closed socket is
+  // retried after RETRY_MS from the SAME in-memory records -- no new Neon
+  // query. The usual reason for a close is a live gateway taking the
+  // channel (the relay refuses a replay while live is connected, close
+  // 1013), so the replay keeps knocking and takes over again within
+  // RETRY_MS of the live feed stopping.
+  function connect() {
+    const gw = new WebSocket(`ws://localhost:${PORT}/ingest`);
 
-  gw.on("open", () => {
-    console.log(
-      `[replay-gateway-neon] connected to ws://localhost:${PORT}/ingest — replaying ${records.length} records for symbol=${SYMBOL} at real-time pace (cpu_ghz=${cpuGhz}${LOOP ? ", looping" : ""})`
-    );
-    gw.send(
-      JSON.stringify({
-        type: "hello",
-        cpu_ghz: cpuGhz,
-        isReplay: true,
-        symbol: SYMBOL,
-        capturedAt: capturedAtMs,
-        ...(INGEST_TOKEN ? { token: INGEST_TOKEN } : {}),
-      })
-    );
-    void runLoop();
-  });
+    gw.on("open", () => {
+      console.log(
+        `[replay-gateway-neon] connected to ws://localhost:${PORT}/ingest — replaying ${records.length} records for symbol=${SYMBOL} at real-time pace (cpu_ghz=${cpuGhz}${LOOP ? ", looping" : ""})`
+      );
+      gw.send(
+        JSON.stringify({
+          type: "hello",
+          cpu_ghz: cpuGhz,
+          isReplay: true,
+          symbol: SYMBOL,
+          capturedAt: capturedAtMs,
+          ...(INGEST_TOKEN ? { token: INGEST_TOKEN } : {}),
+        })
+      );
+      void runLoop(gw);
+    });
 
-  async function replayOnce() {
+    gw.on("error", (e) => console.error("[replay-gateway-neon] error:", e.message));
+    gw.on("close", (code, reason) => {
+      if (!LOOP) {
+        console.log("[replay-gateway-neon] disconnected");
+        process.exit(0);
+      }
+      console.log(
+        `[replay-gateway-neon] disconnected (${code}${reason.length ? ` ${reason}` : ""}), retrying in ${RETRY_MS / 1000}s`
+      );
+      setTimeout(connect, RETRY_MS);
+    });
+  }
+
+  async function replayOnce(gw) {
     let prevTsc = null;
     let sent = 0;
     for (const record of records) {
@@ -180,24 +201,21 @@ async function main() {
     return sent;
   }
 
-  async function runLoop() {
+  async function runLoop(gw) {
     let pass = 0;
     do {
       pass++;
-      const sent = await replayOnce();
+      const sent = await replayOnce(gw);
+      if (gw.readyState !== WebSocket.OPEN) return; // cut off mid-pass; the close handler retries
       console.log(
         `[replay-gateway-neon] pass ${pass} complete — sent ${sent}/${records.length} records${LOOP ? " (looping)" : ""}`
       );
-    } while (LOOP && gw.readyState === WebSocket.OPEN);
+    } while (LOOP);
 
-    if (!LOOP) gw.close();
+    gw.close();
   }
 
-  gw.on("error", (e) => console.error("[replay-gateway-neon] error:", e.message));
-  gw.on("close", () => {
-    console.log("[replay-gateway-neon] disconnected");
-    process.exit(0);
-  });
+  connect();
 }
 
 main().catch((err) => {

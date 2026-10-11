@@ -4,7 +4,9 @@ import { ChannelRegistry } from "./channel.js";
 import { isHelloMessage } from "./types.js";
 
 export interface RelayConfig {
-  corsOrigin: string;
+  /** Origins allowed to read /health, /stats, /symbols from a browser.
+   * ["*"] allows any. */
+  corsOrigins: string[];
   /** Viewer cap across ALL instruments (one global budget). */
   maxClients: number;
   /** Backstop on how many instruments one relay will hold. */
@@ -47,8 +49,17 @@ export function createRelay(config: RelayConfig): Relay {
 
   const server = createServer((req, res) => {
     // Browsers call /health and /stats cross-origin (Vercel domain -> relay
-    // domain); the deployed relay restricts this to the web app's origin.
-    res.setHeader("Access-Control-Allow-Origin", config.corsOrigin);
+    // domain). Access-Control-Allow-Origin can carry only ONE origin, so for
+    // an allowlist (production site + local dev) the relay echoes the
+    // request's own Origin when it's on the list. Vary: Origin stops a cache
+    // from serving one origin's allowed response to another.
+    if (config.corsOrigins.includes("*")) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    } else {
+      const origin = req.headers.origin;
+      if (origin && config.corsOrigins.includes(origin)) res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Vary", "Origin");
+    }
 
     const url = new URL(req.url ?? "/", "http://relay");
     const symbol = url.searchParams.get("symbol");
@@ -143,6 +154,15 @@ export function createRelay(config: RelayConfig): Relay {
       const channel = registry.getOrCreate(hello.symbol);
       if (!channel) {
         ws.close(1013, "channel limit reached");
+        return;
+      }
+      // Live beats replay. A newer feed normally supersedes the current one
+      // (see BybitIngestClient.promote), but a replay is only a stand-in for
+      // when no live gateway is running: it must not knock a live feed off.
+      // The replay retries on its own and takes over again once the live
+      // feed disconnects. A live hello still supersedes a replay at once.
+      if (hello.isReplay && channel.source.isConnected() && !channel.source.isReplay()) {
+        ws.close(1013, "live feed active");
         return;
       }
       channel.source.attach(ws, hello);
