@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, MouseEvent } from "react";
 
-import { type StatsMessage, type LiveSample } from "@/lib/types";
-import { computeLiveTailEvents } from "@/lib/tailAttribution";
+import { type StatsMessage } from "@/lib/types";
 
 import {
   aggregateHistoricalLatency,
@@ -38,7 +37,6 @@ import {
 } from "./StageLatencyBreakdown";
 
 interface LatencyPanelProps {
-  recentSamples: LiveSample[];
   cpuGhz: number;
   stats: StatsMessage | null;
 }
@@ -276,7 +274,6 @@ const ALL_METRICS_VISIBLE: Record<PercentileMetric, boolean> = {
 /* -------------------------------------------------------------------------- */
 
 export function LatencyPanel({
-  recentSamples,
   cpuGhz: _cpuGhz,
   stats,
 }: LatencyPanelProps) {
@@ -332,12 +329,6 @@ export function LatencyPanel({
    * column, which is also visually "the historical summary's own area").
    */
   const panelRootRef = useRef<HTMLDivElement>(null);
-  /*
-   * Keep this calculation because the component still receives the live
-   * sample stream. The historical Latency Tails view itself is driven by
-   * latencyBuckets.
-   */
-  useMemo(() => computeLiveTailEvents(recentSamples), [recentSamples]);
 
   /* ------------------------------------------------------------------------ */
   /* HISTORICAL BUCKETS                                                       */
@@ -400,11 +391,10 @@ export function LatencyPanel({
       return null;
     }
 
+    // In-frame wait is deliberately not a candidate here or in the Stage
+    // Breakdown below: the dashboard reports the four pipeline stages the
+    // gateway itself executes (parse, queue, book-update, publish).
     const stages = [
-      {
-        name: "in-frame-wait",
-        value: latestSpike.inFrame.p99Ns,
-      },
       {
         name: "parse",
         value: latestSpike.parse.p99Ns,
@@ -505,12 +495,6 @@ export function LatencyPanel({
       valueNs: number;
       color: string;
     }[] = [
-      {
-        key: "inFrame",
-        name: "in-frame wait",
-        valueNs: bucket.inFrame.p99Ns,
-        color: chartTheme.inFrame,
-      },
       {
         key: "parse",
         name: "parse",

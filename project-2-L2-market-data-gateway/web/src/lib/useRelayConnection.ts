@@ -129,6 +129,8 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
   // using whatever cpu_ghz is current, without recreating the closure every
   // time a hello message updates it.
   const cpuGhzRef = useRef(DEFAULT_CPU_GHZ);
+  // Identity of the upstream the last hello described (see the hello case).
+  const sourceKeyRef = useRef<string | null>(null);
   // Read inside the onmessage closure the same way cpuGhzRef is -- avoids
   // recreating connect() (and therefore the WebSocket) on every render just
   // because the caller passed a fresh string with the same value.
@@ -223,6 +225,14 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
 
       switch (parsed.type) {
         case "hello": {
+          // A hello mid-stream means the relay's upstream changed (e.g. the
+          // live gateway stopped and the replay took over). If it's a
+          // different SOURCE, not just the same one reconnecting, drop the
+          // old trades: live prints and replayed prints from another day
+          // must not sit interleaved in one tape.
+          const sourceKey = `${parsed.isReplay ?? false}:${parsed.capturedAt ?? ""}`;
+          if (sourceKeyRef.current !== null && sourceKeyRef.current !== sourceKey) setTrades([]);
+          sourceKeyRef.current = sourceKey;
           cpuGhzRef.current = parsed.cpu_ghz;
           setCpuGhz(parsed.cpu_ghz);
           setCapturedAt(parsed.capturedAt);

@@ -87,9 +87,14 @@ function TradeRow({
   // against Hyperliquid's own raw WS feed by trade_id -- every single one
   // came back inverted under the old side==="bid"?green:red mapping.
   const color = trade.side === "ask" ? "text-[#3fb950]" : "text-[#f85149]";
-  const date = new Date(trade.receivedAtMs);
-  const time =
-    date.toLocaleTimeString("en-US", { hour12: false }) + "." + String(trade.receivedAtMs % 1000).padStart(3, "0");
+  // The exchange's own trade time, not when this browser received it: a
+  // replay must show when its trades actually happened (the captured
+  // session), and even live it's the true print time rather than print
+  // time plus network and processing delay. receivedAtMs is only the
+  // fallback for a session captured before the gateway exported it.
+  const tradeMs = trade.event_time_ms ?? trade.receivedAtMs;
+  const date = new Date(tradeMs);
+  const time = date.toLocaleTimeString("en-US", { hour12: false }) + "." + String(tradeMs % 1000).padStart(3, "0");
 
   return (
     <div className="grid h-6 grid-cols-3 items-center gap-2 px-3">
