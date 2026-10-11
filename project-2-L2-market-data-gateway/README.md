@@ -33,7 +33,7 @@ The latest numeric comparison documented in the engineering history is a short n
 | --- | ---: | ---: | ---: | ---: | ---: |
 | BTC, both instrument processes active | 3.8 µs | 10.7 µs | **28.5 µs** | 29.9 µs | 0 of 383 |
 
-That run lasted two minutes. Treat it as a measured desktop sample, not as a sustained production or cloud guarantee. Earlier runs exposed a core-allocation bug: both instrument processes pinned busy consumers to the same physical core, producing a 15.4 ms p99 queue wait. Runtime core claiming now reserves one physical core per process, places its producer on the SMT sibling, and keeps the consumers from colliding. The comparison reduced p99 to 28.5 µs.
+That run lasted two minutes. It is the latest numeric comparison recorded in the engineering history, but it predates a later consumer-stall fix; the repository has no post-fix latency capture. Treat it as a measured desktop sample, not as a current production or cloud guarantee. Earlier runs exposed a core-allocation bug: both instrument processes pinned busy consumers to the same physical core, producing a 15.4 ms p99 queue wait. Runtime core claiming now reserves one physical core per process, places its producer on the SMT sibling, and keeps the consumers from colliding. The comparison reduced p99 to 28.5 µs.
 
 ## Dashboard
 
@@ -42,6 +42,7 @@ The dashboard includes:
 - An L2 order-book ladder and depth curve.
 - A trades tape with exchange timestamps.
 - An explicit Live/Replay selector and per-instrument feed status.
+- A replay notice with the original capture time, kept distinct from exchange event time and the viewer's clock.
 - ECharts latency distributions and per-stage breakdowns from rolling relay metrics.
 
 Charts were migrated from uPlot to ECharts as the latency view grew to include a histogram heatmap, percentile overlays, and stage panels. If the selected feed mode is unavailable, the dashboard displays an unavailable/status state. It does not silently fall back to data from the other mode.
@@ -55,7 +56,8 @@ Charts were migrated from uPlot to ECharts as the latency view grew to include a
 - **Measure the stages that matter:** each stage has its own timestamp boundary. Batch wait is kept distinct from queue transit so time in a received frame is not attributed to the SPSC queue.
 - **Honest feed modes:** live and replay records carry mode and capture-time metadata. An unavailable selection shows a status state instead of substituting the other feed.
 - **Charts follow the data model:** uPlot was replaced with ECharts for the current histogram, percentile, and stage views. The relay sends rolling aggregates rather than repeatedly sending the full latency history to every viewer.
-- **Cost-aware hosting:** the original cloud experiment targeted $0 shared-vCPU hosting. Scheduler contention left a long latency tail even after tuning, so the public demo moved to desktop-captured sessions and replay. The current providers are Vercel, Railway, and Neon; provider billing is not specified in repository config.
+- **Diagnose before changing hosts:** on the original $0 shared-vCPU cloud instance, queue p99 improved from 45.16 ms to 0.158 ms after scoped real-time scheduling and disabling nonessential timers. A residual tail still reached 10–52 ms in 4 of 829 samples, so the public feed moved to desktop capture and replay instead of presenting shared-vCPU performance as a live latency claim.
+- **Operational fixes:** later changes addressed consumer stalls, an export worker that spun while idle, and relay disconnects that could go unnoticed. The relay also stopped sending an 8 MB latency history to every viewer every second; it now sends rolling aggregates. The repository has no latency measurement after these later fixes.
 
 The gateway uses a market-data WebSocket API and does not include exchange order entry, a trading strategy, or L3 order-by-order reconstruction.
 
@@ -86,7 +88,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:3000`. The fake gateway supplies protocol-shaped sample data; it is not an exchange connection. To capture from Hyperliquid, build and run the C++ gateway with the required Boost, simdjson, OpenSSL, and zlib development packages. `CMakeLists.txt` sets C++20 and defines the `L2DataCapture` target.
+Open `http://localhost:3000`. The fake gateway supplies protocol-shaped sample data; it is not an exchange connection. To capture from Hyperliquid, build and run the C++ gateway with the required Boost, simdjson, OpenSSL, and zlib development packages. `CMakeLists.txt` sets C++20 and defines the `L2DataCapture` target. `relay/scripts/audit-feed.mjs` can compare relay output with the selected Hyperliquid feed.
 
 ### Replay from Neon
 

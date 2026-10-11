@@ -9,7 +9,7 @@ Trading systems and quantitative tools spanning C++20 market-data infrastructure
 | [L2 Market Data Gateway](./project-2-L2-market-data-gateway/) | Captures Hyperliquid L2 depth and trades, records measured pipeline stages, and serves a live or replay dashboard. | C++20, Boost.Beast, simdjson, TypeScript, Next.js, Node.js, Neon Postgres | Queue transit p99 **28.5 µs** in a 383-sample desktop run; 0 samples exceeded 1 ms. | [Open dashboard](https://l2-orderbook-gateway.vercel.app/) | [Project folder](./project-2-L2-market-data-gateway/) |
 | [Microgrid MDP](./project-1-microgrid-mdp/) | Models battery dispatch under changing market regimes and transaction costs using a Markov Decision Process. | Python, NumPy, Pandas | **+96.17** alpha lift over a random policy in the documented seeded experiment. | — | [Project folder](./project-1-microgrid-mdp/) |
 
-The gateway latency figure is from a short native desktop measurement with both instruments active. It is not a cloud latency claim. The microgrid result is a simulation result, not a market return.
+The gateway latency figure is from a short native desktop measurement with both instruments active. It predates a later consumer-stall fix, and no post-fix capture is documented. It is not a cloud latency claim. The microgrid result is a simulation result, not a market return.
 
 ## Repository structure
 
