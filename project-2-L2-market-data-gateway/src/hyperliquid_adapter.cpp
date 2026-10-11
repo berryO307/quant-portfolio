@@ -9,6 +9,8 @@
 #include <boost/beast/websocket/ssl.hpp>
 #include <simdjson.h>
 
+#include <algorithm>
+#include <functional>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -128,38 +130,90 @@ void HyperliquidAdapter::connect_and_read() {
     ws.write(net::buffer(sub_msg));
     std::cout << "[hl-ws] subscribed: " << sub_msg << "\n";
 
+    // Asynchronous read loop, so this same thread can keep the connection
+    // alive while waiting. It used to be a blocking ws.read() with no
+    // deadline, which had two failure modes:
+    //   - Hyperliquid closes a connection it hasn't sent anything on for
+    //     60s. A quiet market reliably hits that: one 13h WTI session was
+    //     force-disconnected 14 times, each reconnect a window for missed
+    //     trades. Fixed by sending {"method":"ping"} every PING_INTERVAL.
+    //   - a connection that dies without closing (network drop, sleep and
+    //     resume) leaves a blocking read waiting forever, silently. Fixed by
+    //     reconnecting after SILENCE_TIMEOUT with nothing received at all.
+    // A 1s housekeeping timer does both, plus noticing a stop request.
+    //
+    // dispatch() runs from the read completion exactly as it ran after the
+    // blocking read; its t1 stamp is still the first thing it does.
+    beast::get_lowest_layer(ws).expires_never();
     beast::flat_buffer buf;
-    while (!stop_flag_.load(std::memory_order_relaxed)) {
-        beast::error_code ec;
-        beast::get_lowest_layer(ws).expires_never();
-        ws.read(buf, ec);
+    const std::string ping_msg = R"({"method":"ping"})";
+    auto last_rx        = std::chrono::steady_clock::now();
+    auto last_ping      = last_rx;
+    bool ping_in_flight = false;
+    bool done           = false;
+    net::steady_timer housekeeping(ioc);
 
-        if (ec == websocket::error::closed) {
-            std::cout << "[hl-ws] server closed connection\n";
-            break;
-        }
-        if (ec == net::error::timed_out) {
-            std::cerr << "[hl-ws] connection timed out (silent drop). Dropping socket...\n";
-            break;
-        }
-        if (ec) {
-            std::cerr << "[hl-ws] read error: " << ec.message() << "\n";
-            break;
-        }
+    // Ends this connection: closing the socket completes whatever read or
+    // write is pending, ioc.run() returns, and run() reconnects.
+    auto finish = [&](const char* why, beast::error_code ec = {}) {
+        if (done) return;
+        done = true;
+        if (why) std::cerr << "[hl-ws] " << why << (ec ? ": " + ec.message() : std::string{}) << "\n";
+        housekeeping.cancel();
+        beast::error_code ignored;
+        beast::get_lowest_layer(ws).socket().close(ignored);
+    };
 
-        buf.reserve(buf.size() + simdjson::SIMDJSON_PADDING);
-        simdjson::padded_string_view padded(
-            static_cast<const char*>(buf.data().data()),
-            buf.size(),
-            buf.capacity()
-        );
+    std::function<void()> do_read = [&]() {
+        ws.async_read(buf, [&](beast::error_code ec, std::size_t) {
+            if (ec) {
+                finish(ec == websocket::error::closed ? "server closed connection" : "read error", ec);
+                return;
+            }
+            last_rx = std::chrono::steady_clock::now();
 
-        dispatch(padded);
-        buf.clear();
-    }
+            buf.reserve(buf.size() + simdjson::SIMDJSON_PADDING);
+            simdjson::padded_string_view padded(
+                static_cast<const char*>(buf.data().data()),
+                buf.size(),
+                buf.capacity()
+            );
+            dispatch(padded);
+            buf.clear();
+            if (!done) do_read();
+        });
+    };
 
-    beast::error_code ec;
-    ws.close(websocket::close_code::normal, ec);
+    std::function<void()> arm_housekeeping = [&]() {
+        housekeeping.expires_after(std::chrono::seconds(1));
+        housekeeping.async_wait([&](beast::error_code ec) {
+            if (ec || done) return;
+            if (stop_flag_.load(std::memory_order_relaxed)) {
+                finish(nullptr);
+                return;
+            }
+            const auto now = std::chrono::steady_clock::now();
+            if (now - last_rx >= SILENCE_TIMEOUT) {
+                finish("nothing received for 75s, connection presumed dead");
+                return;
+            }
+            // One read and one write may be in flight together on a Beast
+            // websocket; the ping is the only writer once subscribed.
+            if (!ping_in_flight && now - last_ping >= PING_INTERVAL) {
+                ping_in_flight = true;
+                last_ping      = now;
+                ws.async_write(net::buffer(ping_msg), [&](beast::error_code wec, std::size_t) {
+                    ping_in_flight = false;
+                    if (wec) finish("ping failed", wec);
+                });
+            }
+            arm_housekeeping();
+        });
+    };
+
+    do_read();
+    arm_housekeeping();
+    ioc.run();
 }
 
 void HyperliquidAdapter::trigger_resync() {
@@ -262,6 +316,13 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
         if (trade_arr.reset() != simdjson::SUCCESS) { /* reset() is best-effort */ }
         const uint16_t batch_size = static_cast<uint16_t>(n_trades);
         uint16_t idx = 0;
+        // Duplicate filter (see trade_watermark_ms_): judged against the
+        // watermark as it stood BEFORE this frame, since a resubscribe's
+        // replay frame isn't guaranteed to be time-ordered.
+        const int64_t frame_watermark = trade_watermark_ms_;
+        int64_t new_watermark = frame_watermark;
+        scratch_new_ids_.clear();
+        uint32_t duplicates = 0;
         for (auto trade_elem : trade_arr) {
             // This tick's own marginal parse work starts here, not at t1 —
             // t1 is the whole frame's arrival stamp, shared by every trade
@@ -272,6 +333,23 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
             if (trade_elem.get(trade_val) != simdjson::SUCCESS) { ++idx; continue; }
             Tick trade_tick{};
             if (parse_trade(trade_val, trade_tick)) {
+                const auto& tr = std::get<AggTrade>(trade_tick.data);
+                const bool seen =
+                    tr.trade_time < frame_watermark ||
+                    (tr.trade_time == frame_watermark &&
+                     std::find(trade_ids_at_watermark_.begin(), trade_ids_at_watermark_.end(), tr.agg_trade_id) !=
+                         trade_ids_at_watermark_.end());
+                if (seen) {
+                    ++duplicates;
+                    ++idx;
+                    continue;
+                }
+                if (tr.trade_time > new_watermark) {
+                    new_watermark = tr.trade_time;
+                    scratch_new_ids_.clear();
+                }
+                if (tr.trade_time == new_watermark) scratch_new_ids_.push_back(tr.agg_trade_id);
+
                 uint64_t t2 = rdtscp();
                 // parse_cycles is NOT recorded here. LatencyStore::dump() zips the
                 // four stage vectors by index, so they must be appended by one
@@ -297,6 +375,15 @@ void HyperliquidAdapter::dispatch(simdjson::padded_string_view raw_msg) {
                 }
             }
             ++idx;
+        }
+        if (new_watermark > frame_watermark) {
+            trade_watermark_ms_ = new_watermark;
+            trade_ids_at_watermark_.swap(scratch_new_ids_);
+        } else if (new_watermark == frame_watermark) {
+            trade_ids_at_watermark_.insert(trade_ids_at_watermark_.end(), scratch_new_ids_.begin(), scratch_new_ids_.end());
+        }
+        if (duplicates > 0) {
+            std::cout << "[hl-ws] skipped " << duplicates << " trade(s) already delivered (re-sent on resubscribe)\n";
         }
         return;
     }

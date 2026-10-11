@@ -5,6 +5,7 @@
 #include <string>
 #include <cstdio>
 #include <cstring>
+#include "thread_utils.hpp" // idle_sleep
 
 class AsyncLogger {
 public:
@@ -61,7 +62,9 @@ private:
                 tail = (tail + 1) & (CAPACITY - 1);
                 tail_.store(tail, std::memory_order_release);
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            // Not sleep_for(100us): a no-op on this toolchain, so this would
+            // spin a core whenever the logger is in use. See idle_sleep().
+            idle_sleep(std::chrono::microseconds(100));
         }
     }
 

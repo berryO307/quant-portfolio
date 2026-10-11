@@ -38,6 +38,14 @@ public:
     static constexpr auto RECONNECT_MAX_DELAY    = std::chrono::seconds(30);
     static constexpr int  RECONNECT_BACKOFF_MULT = 2;
 
+    // Hyperliquid closes any connection it hasn't sent a message on for 60s.
+    // A {"method":"ping"} gets a {"channel":"pong"} back, so pinging well
+    // inside that keeps a quiet market's connection open.
+    static constexpr auto PING_INTERVAL   = std::chrono::seconds(30);
+    // Nothing received at all, pongs included, for this long: the connection
+    // is dead without having closed (network drop, sleep/resume). Reconnect.
+    static constexpr auto SILENCE_TIMEOUT = std::chrono::seconds(75);
+
     HyperliquidAdapter(SpscRingBuffer<Tick, 1024>& queue,
                         std::atomic<bool>& stop_flag,
                         LatencyStore& latency,
@@ -80,6 +88,15 @@ private:
     // hot-path convention. Sized for l2Book's fixed 20-level/side cap.
     std::vector<PriceLevel> scratch_bids_;
     std::vector<PriceLevel> scratch_asks_;
+
+    // Trades channel only. On every (re)subscribe Hyperliquid first sends
+    // its most recent trades, so after a reconnect the ones already
+    // delivered would be delivered again. A trade is new if it is newer
+    // than the newest one seen, or at that same millisecond with an id not
+    // seen yet. Survives reconnects (that's the point); see dispatch().
+    int64_t              trade_watermark_ms_{0};
+    std::vector<int64_t> trade_ids_at_watermark_;
+    std::vector<int64_t> scratch_new_ids_;
 
     void connect_and_read();
     void trigger_resync();

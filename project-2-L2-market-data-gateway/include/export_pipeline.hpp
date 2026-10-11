@@ -360,7 +360,11 @@ private:
                 got_any = true;
             }
             if (!got_any) {
-                std::this_thread::sleep_for(std::chrono::microseconds(500));
+                // idle_sleep, not sleep_for: on this toolchain sleep_for(500us)
+                // returns immediately, which made this thread a TIME_CRITICAL
+                // busy-spin -- a full core, and the source of the other
+                // instrument's 32ms consumer stalls. See idle_sleep().
+                idle_sleep(std::chrono::microseconds(500));
             }
         }
 
