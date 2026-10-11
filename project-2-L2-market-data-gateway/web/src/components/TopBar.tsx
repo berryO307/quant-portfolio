@@ -1,9 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import { Microtape } from "./Microtape";
+import { FeedModeIndicator } from "./FeedModeIndicator";
 import { orderbookHref } from "@/lib/instruments";
 import { useTheme } from "@/lib/useTheme";
 import { useSidebarState } from "@/lib/sidebarState";
@@ -17,55 +17,6 @@ import { useSidebarState } from "@/lib/sidebarState";
  * The instrument selector deliberately does NOT live here — it stays inline
  * with the Order Book / Trades tabs in the dashboard.
  */
-
-/*
- * Live wall-clock, read from the VIEWER's own browser — new Date() and
- * toLocaleDateString/toLocaleTimeString called with no locale/timeZone
- * argument, so both the calendar format and the time itself come from
- * whatever the browser's own locale/OS clock/timezone say, not a fixed
- * value baked in here.
- *
- * Ticks locally every second rather than depending on any relay/server
- * message — this has nothing to do with feed data.
- */
-function Clock() {
-  // null until the first client-side effect runs: the server has no
-  // knowledge of the viewer's own clock or locale, so rendering a real
-  // date/time during SSR would either be wrong or mismatch what the client
-  // hydrates with. Same "nothing until mounted" pattern Sidebar's codename
-  // uses for the same reason.
-  const [now, setNow] = useState<Date | null>(null);
-
-  useEffect(() => {
-    // Initial set deferred to a microtask — same pattern lib/useTheme.ts and
-    // Sidebar's codename use — so this is a callback-triggered update, not a
-    // synchronous setState in the effect body. The interval's own tick is
-    // already inside a callback, so it doesn't need the same treatment.
-    queueMicrotask(() => setNow(new Date()));
-    const id = setInterval(() => setNow(new Date()), 1_000);
-    return () => clearInterval(id);
-  }, []);
-
-  if (!now) {
-    return <div aria-hidden="true" className="h-[26px] w-[118px]" />;
-  }
-
-  return (
-    <div className="flex flex-col items-end leading-tight">
-      <span className="font-mono text-[11px] text-brand-blue">
-        {now.toLocaleDateString(undefined, {
-          weekday: "short",
-          month: "short",
-          day: "numeric",
-          year: "numeric",
-        })}
-      </span>
-      <span className="font-mono text-[11px] text-muted-foreground">
-        {now.toLocaleTimeString()}
-      </span>
-    </div>
-  );
-}
 
 function SunIcon({ className }: { className?: string }) {
   return (
@@ -181,13 +132,12 @@ export function TopBar() {
         </Link>
       </div>
 
-      <div className="flex items-center gap-3">
-        {/* Hidden below `sm` — the wordmark + hamburger on the left and
-            this clock + theme button on the right don't all fit a ~375px
-            viewport at once; the clock is the least essential of the four. */}
-        <div className="hidden sm:block">
-          <Clock />
-        </div>
+      <div className="flex min-w-0 items-center gap-3">
+        {/* Operating state (LIVE/REPLAY/OFFLINE), capture time and the
+            labelled local clock. Each piece drops out at its own
+            breakpoint from inside that component — the badge survives to
+            375px, the time blocks don't (see FeedModeIndicator). */}
+        <FeedModeIndicator />
         <ThemeCycleButton />
       </div>
     </header>

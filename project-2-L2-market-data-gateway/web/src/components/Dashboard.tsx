@@ -8,6 +8,7 @@ import { relayHealthUrl, relayLiveUrl } from "@/lib/config";
 import { pickBestSnapshot } from "@/lib/orderBook";
 import { useFeedModeState } from "@/lib/feedModeState";
 import { FeedStatusBanner } from "./FeedStatusBanner";
+import { ReplayNotice } from "./ReplayNotice";
 import type { FeedMode } from "./LiveReplayToggle";
 import { FeedModeUnavailable } from "./FeedModeUnavailable";
 import { OrderBookDepthSplit } from "./OrderBookDepthSplit";
@@ -79,6 +80,12 @@ export function Dashboard({ instrument }: { instrument: InstrumentConfig }) {
   // unrelated connection failure would just be two conflicting messages
   // for the same underlying "no data yet" moment.
   const feedModeUnavailable = connectionHealthy && (feedMode === "replay") !== isReplay;
+  // A replayed capture is what's actually on screen. Gated on
+  // connectionHealthy for the same reason feedMode is: isReplay defaults to
+  // false before the first hello, and on the actual upstream rather than
+  // the viewer's selection, so the replay notice/labels below describe the
+  // data being rendered and never the mode someone merely clicked.
+  const showingReplay = connectionHealthy && isReplay;
 
   // Publishes this connection's current feed state for Sidebar to render
   // (see lib/feedModeState.tsx's own comment for why this can't just be
@@ -147,6 +154,11 @@ export function Dashboard({ instrument }: { instrument: InstrumentConfig }) {
         queueOverflowDropped={queueOverflowDropped}
         symbolMismatch={symbolMismatch}
       />
+
+      {/* Below FeedStatusBanner on purpose: that banner only renders when
+          something is WRONG, and a real fault outranks the (normal,
+          expected) fact that this is a capture. */}
+      {showingReplay && <ReplayNotice capturedAt={capturedAt} />}
 
       {/* Two columns: market data (tabbed) on the left, latency on the
           right (Phase 8.5 — order book and trades used to sit side by side,
@@ -254,17 +266,19 @@ export function Dashboard({ instrument }: { instrument: InstrumentConfig }) {
             </div>
           ) : (
             <div className="min-h-0 flex-1 overflow-hidden">
-              <TradesTape trades={trades} priceDecimals={instrument.priceDecimals} qtyDecimals={instrument.qtyDecimals} />
+              <TradesTape
+                trades={trades}
+                priceDecimals={instrument.priceDecimals}
+                qtyDecimals={instrument.qtyDecimals}
+                isReplay={showingReplay}
+              />
             </div>
           )}
         </div>
 
         <div className="order-1 flex min-h-[680px] flex-col overflow-hidden lg:order-2 lg:min-h-0">
           <div className="min-h-0 flex-1 overflow-hidden">
-            <LatencyPanel
-            cpuGhz={cpuGhz}
-            stats={stats}
-             />
+            <LatencyPanel cpuGhz={cpuGhz} stats={stats} isReplay={showingReplay} />
           </div>
         </div>
       </div>

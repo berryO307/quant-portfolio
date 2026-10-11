@@ -23,6 +23,22 @@ export function formatLatencyNs(ns: number): string {
   return `${(ns / 1_000_000).toFixed(2)} ms`;
 }
 
+// When a replayed capture was originally recorded, for the top bar's
+// CAPTURE TIME block and the replay banner -- one formatter so those two
+// can never disagree about the same timestamp. Includes the resolved
+// timezone, since a date and time with no zone is exactly the kind of
+// value that gets misread as local market time.
+//
+// Browser locale and timezone, like every other clock in this app (no
+// locale/timeZone argument). Callers handle a missing capture time
+// themselves; this never substitutes the current date for one.
+export function formatCaptureTime(epochMs: number): string {
+  const d = new Date(epochMs);
+  const date = d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+  const time = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit", timeZoneName: "short" });
+  return `${date} · ${time}`;
+}
+
 export function formatBucketTime(timestampMs: number): string {
   return new Date(timestampMs).toLocaleTimeString([], {
     hour: "2-digit",
