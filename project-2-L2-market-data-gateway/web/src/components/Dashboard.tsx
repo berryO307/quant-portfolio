@@ -5,7 +5,8 @@ import { useRelayConnection } from "@/lib/useRelayConnection";
 import { INSTRUMENTS, defaultBucketSize } from "@/lib/instruments";
 import { pickBestSnapshot } from "@/lib/orderBook";
 import { FeedStatusBanner } from "./FeedStatusBanner";
-import { ReplayIndicator } from "./ReplayIndicator";
+import { LiveReplayToggle, type FeedMode } from "./LiveReplayToggle";
+import { FeedModeUnavailable } from "./FeedModeUnavailable";
 import { OrderBookDepthSplit } from "./OrderBookDepthSplit";
 import { TradesTape } from "./TradesTape";
 import { LatencyPanel } from "./LatencyPanel";
@@ -29,9 +30,20 @@ export function Dashboard() {
   // starting view for any instrument without this component needing to
   // know its price magnitude or tick size.
   const [bucketSize, setBucketSize] = useState<number>(defaultBucketSize(INSTRUMENTS[0]!.priceBucketOptions));
+  // null = no explicit choice yet -- the toggle then AUTO-FOLLOWS whichever
+  // mode the relay's real upstream actually is (see the derived
+  // `feedMode` below), which is what makes "whichever mode is actually
+  // available becomes the default" true without hardcoding a default per
+  // instrument/deployment. Reset to null on every instrument switch, same
+  // reasoning as useRelayConnection's own capturedAt/isReplay reset: BTC
+  // and WTI are independent connections that can honestly be in different
+  // states, and a "Live" pick made for one has no business silently
+  // carrying over and showing a coming-soon card for the other.
+  const [userFeedMode, setUserFeedMode] = useState<FeedMode | null>(null);
   function handleInstrumentChange(next: (typeof INSTRUMENTS)[number]) {
     setInstrument(next);
     setBucketSize(defaultBucketSize(next.priceBucketOptions));
+    setUserFeedMode(null);
   }
   const {
     wsConnected,
@@ -46,6 +58,25 @@ export function Dashboard() {
     recentSamples,
     stats,
   } = useRelayConnection(instrument.relayWsUrl, instrument.relayHealthUrl, instrument.symbol);
+
+  // Connection has to actually be healthy before isReplay means anything --
+  // useRelayConnection defaults isReplay to false before the first real
+  // hello arrives, which would otherwise read as a confirmed "live" for a
+  // split second (or indefinitely, if the relay never connects at all).
+  const connectionHealthy = wsConnected && healthOk;
+  // Auto-follows whichever mode the relay's real upstream actually is
+  // until the viewer explicitly picks one (see userFeedMode's own
+  // comment) -- this is what makes "sensible default" true without a
+  // hardcoded per-deployment default: a first-time visitor to the
+  // deployed site (replay-only right now) lands on Replay; running this
+  // locally against a live gateway lands on Live.
+  const feedMode: FeedMode = userFeedMode ?? (isReplay ? "replay" : "live");
+  // Only a real mismatch once the connection is confirmed healthy -- while
+  // still connecting/reconnecting, FeedStatusBanner already owns telling
+  // the viewer that, and showing a "mode not available" card on top of an
+  // unrelated connection failure would just be two conflicting messages
+  // for the same underlying "no data yet" moment.
+  const feedModeUnavailable = connectionHealthy && (feedMode === "replay") !== isReplay;
 
   // The order book and depth curve are always built from the gateway's own
   // captured data, never from anything else. Coarser price buckets (e.g.
@@ -91,7 +122,13 @@ export function Dashboard() {
   // height here would overflow by exactly the top bar's height.
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <ReplayIndicator isReplay={isReplay} capturedAt={capturedAt} />
+      <LiveReplayToggle
+        mode={feedMode}
+        onModeChange={setUserFeedMode}
+        isReplay={isReplay}
+        capturedAt={capturedAt}
+        connectionHealthy={connectionHealthy}
+      />
       <FeedStatusBanner
         wsConnected={wsConnected}
         healthOk={healthOk}
@@ -150,7 +187,18 @@ export function Dashboard() {
           ladder-floor + curve-floor + divider + chrome with room to spare.
           At lg+ there's only a single row (two columns), so this is a
           no-op there — unchanged from before. */}
-      <div className="grid min-h-0 flex-1 auto-rows-[minmax(680px,1fr)] grid-cols-1 divide-y divide-border overflow-y-auto lg:grid-cols-[42%_1fr] lg:divide-x lg:divide-y-0">
+      {feedModeUnavailable ? (
+        // Full replacement for the grid below, not a banner layered on top
+        // of it -- see FeedModeUnavailable's own comment for why. The
+        // toggle above stays interactive regardless, so switching to
+        // whichever mode IS available is always one click away; switching
+        // INSTRUMENT from here isn't (InstrumentSelect lives inside the
+        // grid this replaces) -- an accepted, minor limitation on a
+        // two-instrument site rather than a reason to restructure the
+        // whole header layout for this one state.
+        <FeedModeUnavailable mode={feedMode} />
+      ) : (
+        <div className="grid min-h-0 flex-1 auto-rows-[minmax(680px,1fr)] grid-cols-1 divide-y divide-border overflow-y-auto lg:grid-cols-[42%_1fr] lg:divide-x lg:divide-y-0">
         {/* order-2 lg:order-1: below the lg breakpoint (single-column
             stack), the latency panel renders FIRST and this market-data
             column second — latency is the primary thing this project
@@ -207,6 +255,7 @@ export function Dashboard() {
           </div>
         </div>
       </div>
+      )}
     </div>
   );
 }
