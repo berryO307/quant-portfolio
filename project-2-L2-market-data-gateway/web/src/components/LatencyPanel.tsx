@@ -1060,54 +1060,6 @@ export function LatencyPanel({
       },
 
       /* ---------------------------------------------------------------------- */
-      /* P99.9                                                                   */
-      /* ---------------------------------------------------------------------- */
-      {
-        name: "P99.9",
-        type: "line" as const,
-        yAxisIndex: 1,
-        z: 16,
-
-        showSymbol: true,
-        symbol: "circle",
-        symbolSize: 0,
-        smooth: 0,
-
-        animationDurationUpdate: 0,
-        animationEasingUpdate: "cubicOut" as const,
-
-        emphasis: {
-          disabled: true,
-        },
-
-        /*
-         * Severe tail: dashed + glowing is its own distinguishing pair,
-         * deliberately different from P99's solid-crisp treatment rather
-         * than just a thinner/fainter version of it. A custom, longer dash
-         * ([6, 4] instead of ECharts' default short dash) reads clearly as
-         * "broken line" even where it's laid directly over P99's solid
-         * stroke — the default dash is fine on its own but can visually
-         * smear into a solid-looking band once smooth:0 removes the spline
-         * (which used to distort the dash spacing along curves anyway).
-         */
-        lineStyle: {
-          color: chartTheme.heatHot,
-          width: 1.5,
-          opacity: 1,
-          type: [6, 4],
-          shadowBlur: 2.5,
-          shadowColor: chartTheme.heatHot,
-        },
-
-        data: visibleMetrics.p999
-          ? historicalBuckets.map((bucket, bucketIndex) => [
-              bucketIndex,
-              bucket.total.p999Ns / 1_000,
-            ])
-          : [],
-      },
-
-      /* ---------------------------------------------------------------------- */
       /* MAX                                                                     */
       /* ---------------------------------------------------------------------- */
       {
@@ -1236,29 +1188,6 @@ export function LatencyPanel({
             : [],
       },
       {
-        name: "P99.9 hover",
-        type: "scatter" as const,
-        yAxisIndex: 1,
-        z: 26,
-        silent: true,
-        animation: false,
-        tooltip: { show: false },
-        emphasis: { disabled: true },
-        symbol: "circle",
-        symbolSize: 10,
-        itemStyle: {
-          color: chartTheme.heatHot,
-          borderColor: chartTheme.panel,
-          borderWidth: 2,
-          shadowBlur: 7,
-          shadowColor: chartTheme.heatHot,
-        },
-        data:
-          hoveredBucket && visibleMetrics.p999
-            ? [[highlightedBucketIndex, hoveredBucket.total.p999Ns / 1_000]]
-            : [],
-      },
-      {
         name: "Max hover",
         type: "scatter" as const,
         yAxisIndex: 1,
@@ -1333,7 +1262,6 @@ export function LatencyPanel({
             (param) =>
               param.seriesName === "P50" ||
               param.seriesName === "P99" ||
-              param.seriesName === "P99.9" ||
               param.seriesName === "Max",
           );
 
@@ -1384,12 +1312,6 @@ export function LatencyPanel({
 
           if (visibleMetrics.p99) {
             rows.push(tooltipRow("P99", chartTheme.heatWarm, bucket.total.p99Ns));
-          }
-
-          if (visibleMetrics.p999) {
-            rows.push(
-              tooltipRow("P99.9", chartTheme.heatHot, bucket.total.p999Ns),
-            );
           }
 
           if (visibleMetrics.max) {
@@ -2089,26 +2011,6 @@ export function LatencyPanel({
                   }}
                 />
                 <span className="text-muted-foreground">P99</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => toggleMetric("p999")}
-                aria-pressed={visibleMetrics.p999}
-                title={
-                  visibleMetrics.p999 ? "Hide P99.9" : "Show P99.9"
-                }
-                className={`flex items-center gap-1 rounded px-1 py-0.5 transition-opacity hover:opacity-100 ${
-                  visibleMetrics.p999 ? "opacity-100" : "opacity-40"
-                }`}
-              >
-                <span
-                  className="h-0 w-4 border-t border-dashed"
-                  style={{
-                    borderColor: chartTheme.heatHot,
-                  }}
-                />
-                <span className="text-muted-foreground">P99.9</span>
               </button>
 
               <button

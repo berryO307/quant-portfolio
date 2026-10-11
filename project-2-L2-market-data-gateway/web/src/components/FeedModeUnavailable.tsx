@@ -8,14 +8,23 @@ interface FeedModeUnavailableProps {
 // panel) when the viewer has selected a mode the relay's real upstream
 // isn't currently serving -- e.g. "Live" selected against the deployed
 // site, which currently only runs replay.service (see BUGS.md and the
-// root README's Known Limitations). Deliberately calm/on-theme, matching
-// LiveReplayToggle's own "disclosed fact, not an alarm" coloring, and
+// root README's Known Limitations). Deliberately calm/on-theme, and
 // deliberately a full replacement for the data view rather than a banner
 // layered on top of it -- showing the old replay data mislabeled as live
 // underneath a warning is exactly the silent-mislabeling failure mode
-// this whole feature exists to avoid. The toggle itself stays visible
-// above this (Dashboard.tsx), so switching to the mode that IS available
-// is always one click away.
+// this whole feature exists to avoid. The toggle itself stays visible in
+// the sidebar (LiveReplayToggle.tsx), so switching to the mode that IS
+// available is always one click away.
+//
+// No decorative dot here (an earlier version had one, floating above the
+// heading with no real meaning of its own) -- LiveReplayToggle's OWN
+// status dot already discloses "not currently active" for the selected
+// mode; a second, unrelated dot down here read as a stray/duplicated
+// element rather than real information, and every other empty/waiting
+// state in this app (OrderBookLadder's "Waiting for order book
+// snapshot…", TradesTape's "Waiting for trades…") is plain text with no
+// dot at all. Matching that existing convention instead of inventing a
+// new one for just this card.
 export function FeedModeUnavailable({ mode }: FeedModeUnavailableProps) {
   const heading = mode === "live" ? "Live feed — coming soon" : "No replayed session available";
   const body =
@@ -25,7 +34,6 @@ export function FeedModeUnavailable({ mode }: FeedModeUnavailableProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-1 flex-col items-center justify-center gap-2 p-8 text-center">
-      <span className="h-2 w-2 rounded-full bg-brand-blue" aria-hidden />
       <p className="text-sm font-medium text-foreground">{heading}</p>
       <p className="max-w-sm text-xs text-muted-foreground">{body}</p>
     </div>

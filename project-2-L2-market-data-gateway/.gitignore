@@ -21,6 +21,13 @@ Thumbs.db
 error.log
 *.log
 
+# Local runtime output from scripts/dev-up.sh and the gateway itself
+# (PID files, per-instance working dirs, captured .ndjson.gz sessions,
+# ticks.bin, latency.csv) -- machine-specific, regenerated every run.
+.run/
+data/
+live/
+
 # Internal LLM-workflow docs — kept locally for context, not tracked on GitHub.
 # notes/Engineering_Notes.md is NOT here: it's real engineering documentation,
 # cited by name from README.md, not a Claude-workflow artifact.

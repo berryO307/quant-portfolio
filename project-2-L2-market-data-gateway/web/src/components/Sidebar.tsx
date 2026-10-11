@@ -12,6 +12,8 @@ import {
   shuffleCodename,
 } from "@/lib/anonIdentity";
 import { useSidebarState } from "@/lib/sidebarState";
+import { useFeedModeState } from "@/lib/feedModeState";
+import { LiveReplayToggle } from "./LiveReplayToggle";
 
 /*
  * Collapsible left rail. Presentational; the only state it owns directly is
@@ -127,6 +129,16 @@ function AnonAvatar({ name, size = 30 }: { name: string; size?: number }) {
 export function Sidebar() {
   const pathname = usePathname();
   const { expanded, setExpanded, mobileOpen, setMobileOpen } = useSidebarState();
+  // null whenever no Dashboard is mounted (any route but /orderbook, or
+  // before its first effect runs) -- see lib/feedModeState.tsx's own
+  // comment for why this lives in shared state instead of being rendered
+  // directly by Dashboard, which is a sibling of Sidebar in the layout,
+  // not a parent.
+  const { feed } = useFeedModeState();
+  // Same "icon-only on the desktop collapsed rail, always full on the
+  // mobile drawer" split the bottom identity block below already uses --
+  // mirrored here rather than inventing a second convention for it.
+  const toggleCompact = !expanded && !mobileOpen;
 
   // Empty on the server and on the first client render, filled after mount —
   // sessionStorage isn't readable during SSR, and rendering a name the
@@ -184,6 +196,23 @@ export function Sidebar() {
         </div>
 
         <div className="hidden border-t border-border md:block" />
+
+        {/* Live/Replay toggle -- near the collapse arrow, per its own
+            request. Only rendered once a Dashboard is actually mounted
+            and has reported its feed state (see lib/feedModeState.tsx);
+            on /architecture, or before that first report, this section
+            simply isn't here at all, same "nothing to show" treatment as
+            every other route-scoped control in this shell. */}
+        {feed && (
+          <LiveReplayToggle
+            mode={feed.mode}
+            onModeChange={feed.onModeChange}
+            isReplay={feed.isReplay}
+            capturedAt={feed.capturedAt}
+            connectionHealthy={feed.connectionHealthy}
+            compact={toggleCompact}
+          />
+        )}
 
         {/* Nav — always shows labels on mobile (the drawer only ever opens
             at full width there); md: follows the desktop expanded/collapsed

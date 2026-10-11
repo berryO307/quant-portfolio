@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRelayConnection } from "@/lib/useRelayConnection";
 import { INSTRUMENTS, defaultBucketSize } from "@/lib/instruments";
 import { pickBestSnapshot } from "@/lib/orderBook";
+import { useFeedModeState } from "@/lib/feedModeState";
 import { FeedStatusBanner } from "./FeedStatusBanner";
-import { LiveReplayToggle, type FeedMode } from "./LiveReplayToggle";
+import type { FeedMode } from "./LiveReplayToggle";
 import { FeedModeUnavailable } from "./FeedModeUnavailable";
 import { OrderBookDepthSplit } from "./OrderBookDepthSplit";
 import { TradesTape } from "./TradesTape";
@@ -78,6 +79,23 @@ export function Dashboard() {
   // for the same underlying "no data yet" moment.
   const feedModeUnavailable = connectionHealthy && (feedMode === "replay") !== isReplay;
 
+  // Publishes this connection's current feed state for Sidebar to render
+  // (see lib/feedModeState.tsx's own comment for why this can't just be
+  // rendered directly here anymore -- the toggle now lives in the
+  // sidebar, which is a layout-level sibling, not a child, of Dashboard).
+  // Cleared on unmount so navigating away from /orderbook (the only route
+  // that mounts a Dashboard) doesn't leave a stale toggle showing in the
+  // sidebar on a page with no actual connection.
+  const { setFeed } = useFeedModeState();
+  useEffect(() => {
+    setFeed({ mode: feedMode, onModeChange: setUserFeedMode, isReplay, capturedAt, connectionHealthy });
+  }, [setFeed, feedMode, isReplay, capturedAt, connectionHealthy]);
+  // Separate effect, empty deps -- cleanup here only ever runs on true
+  // unmount, not on every state update above (a cleanup tied to THAT
+  // effect's own deps would clear the sidebar's toggle for a frame on
+  // every single feed update, not just when navigating away).
+  useEffect(() => () => setFeed(null), [setFeed]);
+
   // The order book and depth curve are always built from the gateway's own
   // captured data, never from anything else. Coarser price buckets (e.g.
   // BTC's $1000) need more real price range than the primary subscription's
@@ -122,13 +140,6 @@ export function Dashboard() {
   // height here would overflow by exactly the top bar's height.
   return (
     <div className="flex h-full flex-col bg-background text-foreground">
-      <LiveReplayToggle
-        mode={feedMode}
-        onModeChange={setUserFeedMode}
-        isReplay={isReplay}
-        capturedAt={capturedAt}
-        connectionHealthy={connectionHealthy}
-      />
       <FeedStatusBanner
         wsConnected={wsConnected}
         healthOk={healthOk}
@@ -190,12 +201,13 @@ export function Dashboard() {
       {feedModeUnavailable ? (
         // Full replacement for the grid below, not a banner layered on top
         // of it -- see FeedModeUnavailable's own comment for why. The
-        // toggle above stays interactive regardless, so switching to
-        // whichever mode IS available is always one click away; switching
-        // INSTRUMENT from here isn't (InstrumentSelect lives inside the
-        // grid this replaces) -- an accepted, minor limitation on a
-        // two-instrument site rather than a reason to restructure the
-        // whole header layout for this one state.
+        // toggle itself lives in the sidebar (LiveReplayToggle.tsx via
+        // lib/feedModeState.tsx) and stays interactive regardless, so
+        // switching to whichever mode IS available is always one click
+        // away; switching INSTRUMENT from here isn't (InstrumentSelect
+        // lives inside the grid this replaces) -- an accepted, minor
+        // limitation on a two-instrument site rather than a reason to
+        // restructure the whole layout for this one state.
         <FeedModeUnavailable mode={feedMode} />
       ) : (
         <div className="grid min-h-0 flex-1 auto-rows-[minmax(680px,1fr)] grid-cols-1 divide-y divide-border overflow-y-auto lg:grid-cols-[42%_1fr] lg:divide-x lg:divide-y-0">
