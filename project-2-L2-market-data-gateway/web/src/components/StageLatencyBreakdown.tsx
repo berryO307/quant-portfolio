@@ -39,7 +39,6 @@ interface StageConfig {
 }
 
 const STAGES: readonly StageConfig[] = [
-  { key: "inFrame", label: "In-Frame Wait" },
   { key: "parse", label: "Parse Latency" },
   { key: "queue", label: "Queue Latency" },
   { key: "bookUpdate", label: "Book-Update Latency" },

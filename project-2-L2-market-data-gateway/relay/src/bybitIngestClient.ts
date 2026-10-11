@@ -95,6 +95,10 @@ export class BybitIngestClient extends EventEmitter implements DataSource {
       // rather than letting two upstream feeds coexist and double-deliver.
       this.socket.terminate();
     }
+    // The old socket's close handler bails out (it's no longer
+    // this.socket), so its heartbeat must be stopped here or the interval
+    // leaks -- one per supersede, e.g. every live/replay handover.
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer);
     this.socket = ws;
     this.missedPongs = 0;
     this.startHeartbeat(ws);

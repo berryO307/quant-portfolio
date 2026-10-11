@@ -44,17 +44,21 @@ public:
     static constexpr auto RECONNECT_MAX_DELAY    = std::chrono::seconds(30);
     static constexpr int  RECONNECT_BACKOFF_MULT = 2;
 
-    // host/port: the relay's ingest endpoint (ws://host:port/ingest, plain
-    // TCP — this connection stays on localhost/the private network between
-    // gateway and relay, not the public internet-facing side, matching
-    // relay/README.md's local-dev default of no TLS on /ingest).
+    // host/port: the relay's ingest endpoint, host:port/ingest.
+    // tls: false = plain ws:// (local dev: gateway and relay on one machine
+    // or LAN). true = wss://, required whenever the relay is across the
+    // public internet: the hello carries the ingest token, and without TLS
+    // anyone on the path could read it and then push fake data to every
+    // viewer. With TLS the server's certificate is checked against the
+    // system CA store AND against `host`, so the token only ever goes to
+    // the real relay.
     // cpu_ghz: this session's calibrated TSC frequency — sent in the hello
     // handshake exactly as replay-gateway.mjs and the relay's own
     // HelloMessage contract (relay/src/types.ts) expect.
     // token: optional shared secret, mirrors the relay's INGEST_TOKEN env var.
     // symbol: the instrument this process captures -- the relay serves many
     // instruments and routes a feed to its channel by this hello field.
-    RelayPushClient(std::string host, std::string port, double cpu_ghz,
+    RelayPushClient(std::string host, std::string port, bool tls, double cpu_ghz,
                      std::optional<std::string> token, std::string symbol);
     ~RelayPushClient();
 
@@ -70,6 +74,9 @@ public:
 private:
     void run();
     void connect_and_send();
+    // One connection's lifetime, for either stream type (plain or TLS).
+    // Defined and instantiated only in relay_push_client.cpp.
+    template <bool Tls> void session();
 
     // ~3.2KB/slot (ExportRecord is sized to its largest member, a 100-level-
     // per-side snapshot) * 2048 =~ 6.6MB — generous backlog for a live,
@@ -84,6 +91,7 @@ private:
 
     std::string  host_;
     std::string  port_;
+    bool         tls_;
     double       cpu_ghz_;
     std::optional<std::string> token_;
     std::string  symbol_;

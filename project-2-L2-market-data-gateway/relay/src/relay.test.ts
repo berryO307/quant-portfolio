@@ -13,7 +13,7 @@ const TOKEN = "test-token";
 
 async function startRelay(overrides: Partial<RelayConfig> = {}) {
   const relay = createRelay({
-    corsOrigin: "*",
+    corsOrigins: ["*"],
     maxClients: 50,
     maxChannels: 16,
     ingestToken: TOKEN,
@@ -51,10 +51,15 @@ async function waitFor(check: () => boolean, label: string, timeoutMs = 2_000) {
 
 // Connect a fake data source and send its hello. Waits until the relay has
 // attached it, so records sent afterwards aren't dropped.
-async function feed(base: string, relay: { registry: { get(s: string): { source: { isConnected(): boolean } } | undefined } }, symbol: string) {
+async function feed(
+  base: string,
+  relay: { registry: { get(s: string): { source: { isConnected(): boolean } } | undefined } },
+  symbol: string,
+  extra: Record<string, unknown> = {}
+) {
   const src = open(`ws://${base}/ingest`);
   await src.opened;
-  src.ws.send(JSON.stringify({ type: "hello", cpu_ghz: 3.0, token: TOKEN, symbol }));
+  src.ws.send(JSON.stringify({ type: "hello", cpu_ghz: 3.0, token: TOKEN, symbol, ...extra }));
   await waitFor(() => relay.registry.get(symbol)?.source.isConnected() === true, `${symbol} attached`);
   return src;
 }
@@ -162,6 +167,47 @@ test("MAX_CLIENTS is one budget across all instruments", async () => {
     await Promise.all([a.opened, b.opened]);
     await waitFor(() => relay.registry.totalViewers() === 2, "two viewers");
     assert.equal((await open(viewerUrl(base, "BTC")).closed).code, 1013);
+  } finally {
+    await relay.close();
+  }
+});
+
+test("a replay never displaces a live feed, but live displaces a replay", async () => {
+  const { relay, base } = await startRelay();
+  try {
+    const replay = await feed(base, relay, "BTC", { isReplay: true });
+    const live = await feed(base, relay, "BTC");
+    await replay.closed; // superseded by the live feed
+    assert.equal(relay.registry.get("BTC")?.source.isReplay(), false);
+
+    // The replay retrying while live is up is refused, and live stays attached.
+    const retry = open(`ws://${base}/ingest`);
+    await retry.opened;
+    retry.ws.send(JSON.stringify({ type: "hello", cpu_ghz: 3.0, token: TOKEN, symbol: "BTC", isReplay: true }));
+    assert.deepEqual(await retry.closed, { code: 1013, reason: "live feed active" });
+    assert.equal(live.ws.readyState, WebSocket.OPEN);
+    assert.equal(relay.registry.get("BTC")?.source.isReplay(), false);
+
+    // Once live is gone, the replay is accepted again.
+    live.ws.close();
+    await live.closed;
+    await waitFor(() => relay.registry.get("BTC")?.source.isConnected() === false, "live detached");
+    await feed(base, relay, "BTC", { isReplay: true });
+    assert.equal(relay.registry.get("BTC")?.source.isReplay(), true);
+  } finally {
+    await relay.close();
+  }
+});
+
+test("CORS allowlist echoes a listed origin and omits the header for others", async () => {
+  const { relay, port } = await startRelay({ corsOrigins: ["https://app.example", "http://localhost:3000"] });
+  try {
+    const get = (origin: string) => fetch(`http://127.0.0.1:${port}/symbols`, { headers: { Origin: origin } });
+    const allowed = await get("http://localhost:3000");
+    assert.equal(allowed.headers.get("access-control-allow-origin"), "http://localhost:3000");
+    assert.equal(allowed.headers.get("vary"), "Origin");
+    const denied = await get("https://evil.example");
+    assert.equal(denied.headers.get("access-control-allow-origin"), null);
   } finally {
     await relay.close();
   }
