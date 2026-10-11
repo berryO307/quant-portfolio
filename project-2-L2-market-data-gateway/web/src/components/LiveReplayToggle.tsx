@@ -88,11 +88,18 @@ export function LiveReplayToggle({
   return (
     <div className="flex flex-col gap-2 border-t border-border p-2.5">
       <div className="flex items-center gap-1 rounded-[9px] border border-border bg-background p-0.5">
-        <ModeButton icon={LiveIcon} label="Live" selected={mode === "live"} onClick={() => onModeChange("live")} />
+        <ModeButton
+          icon={LiveIcon}
+          label="Live"
+          selected={mode === "live"}
+          active={actualMode === "live"}
+          onClick={() => onModeChange("live")}
+        />
         <ModeButton
           icon={ReplayIcon}
           label="Replay"
           selected={mode === "replay"}
+          active={actualMode === "replay"}
           onClick={() => onModeChange("replay")}
         />
       </div>
@@ -119,9 +126,12 @@ export function LiveReplayToggle({
 //
 // Live's lit color is red with a soft glow (box-shadow blur, not a second
 // blurred element) -- reads as "on air / recording" at a glance, the
-// established visual shorthand for "live" specifically, distinct from
-// Replay's own lit color (still brand-blue, unchanged: red and blue don't
-// clash, and Replay was never the one this task asked to change).
+// established visual shorthand for "live" specifically.
+//
+// Replay's lit color is brand-amber (was brand-blue): amber is now this
+// app's one signal for "historical capture" everywhere it appears -- this
+// dot, the top bar's REPLAY badge, the replay notice, and the Recorded
+// chips -- so the colour means the same thing in every place it shows up.
 function StatusDot({ mode, active }: { mode: FeedMode; active: boolean }) {
   if (!active) {
     return <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40" aria-hidden />;
@@ -137,31 +147,43 @@ function StatusDot({ mode, active }: { mode: FeedMode; active: boolean }) {
   }
   return (
     <span
-      className="tf-dot-glow h-1.5 w-1.5 shrink-0 rounded-full bg-brand-blue"
-      style={{ "--tf-dot-glow": "var(--brand-blue)" } as React.CSSProperties}
+      className="tf-dot-glow h-1.5 w-1.5 shrink-0 rounded-full bg-brand-amber"
+      style={{ "--tf-dot-glow": "var(--brand-amber)" } as React.CSSProperties}
       aria-hidden
     />
   );
 }
 
+// The coloured (green for live, amber for replay) selected state is used
+// only when this mode is BOTH the viewer's selection and what the relay is
+// actually serving -- selected-but-unavailable keeps the neutral bg-muted
+// treatment, so the colour can never claim a state the feed isn't in.
+// Same rule the status dot beneath already follows.
 function ModeButton({
   icon: Icon,
   label,
   selected,
+  active,
   onClick,
 }: {
   icon: (props: { className?: string }) => React.JSX.Element;
   label: string;
   selected: boolean;
+  active: boolean;
   onClick: () => void;
 }) {
+  const selectedClassName = !active
+    ? "bg-muted text-foreground"
+    : label === "Live"
+      ? "bg-brand-green/15 text-brand-green"
+      : "bg-brand-amber/15 text-brand-amber";
   return (
     <button
       type="button"
       onClick={onClick}
       aria-pressed={selected}
       className={`flex flex-1 items-center justify-center gap-1.5 rounded-[7px] px-2 py-1 text-[12px] font-medium transition-colors ${
-        selected ? "bg-muted text-foreground" : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
+        selected ? selectedClassName : "text-muted-foreground hover:bg-muted/60 hover:text-foreground"
       }`}
     >
       <Icon className="h-3.5 w-3.5 shrink-0" />
@@ -208,9 +230,9 @@ function CompactModeButton({
         {active && (
           <span
             className={`tf-dot-glow absolute -right-0.5 -top-0.5 h-1.5 w-1.5 rounded-full ${
-              label === "Live" ? "bg-red-500" : "bg-brand-blue"
+              label === "Live" ? "bg-red-500" : "bg-brand-amber"
             }`}
-            style={{ "--tf-dot-glow": label === "Live" ? "#ef4444" : "var(--brand-blue)" } as React.CSSProperties}
+            style={{ "--tf-dot-glow": label === "Live" ? "#ef4444" : "var(--brand-amber)" } as React.CSSProperties}
             aria-hidden
           />
         )}
