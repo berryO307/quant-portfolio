@@ -1,171 +1,55 @@
-# L2 Gateway Relay
+# Relay
 
-The only 24/7 piece of this system. Receives data pushed from gateways (ephemeral, per-session processes, one per instrument) and fans it out to any number of browser clients, keeping a rolling latency view per instrument that survives gateway restarts. One relay serves every instrument. See the root [README](../README.md#the-full-observability-stack) for how this fits into the rest of the pipeline.
+The Node.js relay accepts gateway or replay pushes, routes them by instrument, and serves WebSocket feeds and rolling latency aggregates to browser clients. The deployed service runs on Railway. The public feed is supplied by replay workers that load captured sessions from Neon Postgres; a running C++ gateway can also push to the relay.
 
-## Endpoints and routing
+See the [gateway README](../README.md#architecture) for the full system and demo.
 
-Each instrument is a **channel** (`src/channel.ts`): its own upstream feed, viewers, snapshot cache and stats.
+## Endpoints
 
-| Endpoint | Who uses it | Instrument chosen by |
-| --- | --- | --- |
-| `ws /ingest` | gateways / replays (push) | the `symbol` in the first message (the hello) |
-| `ws /live?symbol=BTC` | browsers (watch) | query string |
-| `GET /health?symbol=BTC` | browsers | query string; `503` until that feed is connected, `404` for an unknown symbol |
-| `GET /health` | ops / platform | whole relay: `200` only if every channel has its feed, with a per-channel map |
-| `GET /stats?symbol=BTC` | debugging | query string |
-| `GET /symbols` | ops | lists every channel with feed status and viewer count |
+| Endpoint | Purpose |
+| --- | --- |
+| `ws /ingest` | Authenticated gateway or replay input; instrument comes from the hello message. |
+| `ws /live?symbol=BTC` | Browser feed for one instrument. |
+| `GET /health?symbol=BTC` | Health for the selected feed. |
+| `GET /health` | Relay health across configured channels. |
+| `GET /stats?symbol=BTC` | Rolling latency aggregates for one instrument. |
+| `GET /symbols` | Configured channels, connection state, and viewer counts. |
 
-Symbols contain `:` (e.g. `xyz:CL`), so URL-encode them: `/live?symbol=xyz%3ACL`.
-
-Only an authenticated ingest connection (or the `SYMBOLS` list) can create a channel. A browser asking for an unknown symbol is closed with `1008`; it can never create one, so viewers can't grow the relay's memory.
+Encode symbols containing `:` in query parameters, for example `xyz%3ACL`.
 
 ## Local development
 
 ```bash
 npm install
-npm run dev              # starts the relay on :8080
-npm run fake-gateway      # in a second terminal — simulates the C++ gateway's push connection (symbol BTC)
-npm run fake-gateway -- --symbol=xyz:CL   # a second instrument into the same relay
+npm run dev
 ```
 
-`scripts/fake-gateway.mjs` speaks the exact same wire protocol a real gateway push client would (hello handshake, then sample/snapshot/trade records) — it's what the [web viewer](../web/README.md) can be developed against without running the full C++ capture stack. Pass a port as an argument (`npm run fake-gateway -- 8091`) to match a relay started on a non-default port, and set `INGEST_TOKEN` to match if the relay is running with one configured (see below).
-
-### Replaying a real captured session
-
-`scripts/replay-gateway.mjs` is `fake-gateway.mjs`'s counterpart for real data: it reads a session the C++ gateway actually captured (`data/export/session_*.ndjson.gz`, written by `ColdPathExporter` — see `include/export_pipeline.hpp`) and streams it to `/ingest` at real-time pace, so the web viewer shows genuine captured market activity instead of synthetic data, with no changes needed anywhere else in the pipeline (the exported record shapes already match the wire protocol exactly).
+In another terminal, send protocol-shaped sample records:
 
 ```bash
-npm run replay-gateway -- ../data/export/session_<timestamp>.ndjson.gz 8080 <cpu_ghz> --symbol=<SYM> --loop
+npm run fake-gateway -- --symbol=BTC
 ```
 
-`<cpu_ghz>` must be the value the *capture itself* printed at startup (`Calibrated Host TSC Frequency: X GHz`) — every stage-latency number downstream depends on converting that specific session's raw TSC deltas with the frequency they were actually recorded at, not a guessed or default one.
+The fake gateway is for UI and relay development; it is not an exchange feed. To replay an exported capture file, use `npm run replay-gateway -- <session.ndjson.gz> 8080 <cpu_ghz> --symbol=BTC --loop`. Use the TSC frequency recorded with that capture.
 
-`--symbol=<SYM>` is required (e.g. `--symbol=BTC` or `--symbol=xyz:CL`) — a session filename encodes a capture *timestamp*, never an instrument, so unlike the timestamp there's no honest value to fall back to if it's omitted. Stamped onto the hello handshake and onto every replayed record (see `relay/src/types.ts`'s `symbol` field) so the wire format is self-describing regardless of which port it arrived on.
+## Railway deployment
 
-Without `--loop`, this does exactly one real-time pass through the file and then disconnects (matching a real gateway session ending) — for a 3-minute capture, that means the web viewer shows "Live feed unavailable" again after 3 real minutes, with nothing wrong. `--loop` re-runs the same pass indefinitely instead (re-sending the same `hello` each time, the same way a real gateway reconnecting would), which is almost always what you actually want for a standing local data source.
+`railway.json` runs `npm run build` and starts `scripts/start-railway.mjs`. Configure Railway with this directory as the service root. Set `PORT`, `CORS_ORIGIN`, `SYMBOLS`, and `DATABASE_URL` in the service settings. The start script creates the relay and launches one Neon-backed replay worker per symbol when both `DATABASE_URL` and `SYMBOLS` are set. Without them, the relay waits for a gateway on `/ingest`.
 
-## Environment variables
+Use `INGEST_TOKEN` to protect `/ingest`; set the same value for the gateway or replay sender. Set `CORS_ORIGIN` to the Vercel dashboard origin. Keep `DATABASE_URL` and `INGEST_TOKEN` in the provider's secret settings, not in Git. The browser only needs the public relay base URL through `NEXT_PUBLIC_RELAY_URL` in the web app.
 
-| Variable | Default | Description |
-| --- | --- | --- |
-| `PORT` | `8080` | The port this process listens on — both the `/ingest` WebSocket the gateway connects to and the `/live`, `/health`, `/stats` endpoints the web viewer uses. This *is* "the gateway connection address": combined with the host's public IP, `ws://<host>:<PORT>/ingest` (or `wss://` behind a TLS-terminating proxy) is what a gateway-side push client needs to be configured to connect to. |
-| `CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` on `/health` and `/stats`, which the browser polls cross-origin. Defaults open for local dev; **set this to your deployed web app's exact origin in production** (e.g. `https://your-app.vercel.app`) so other sites can't read these endpoints from a visitor's browser. Comma-separated for several (e.g. `https://your-app.vercel.app,http://localhost:3000` so local dev can point at the deployed relay); the relay echoes back whichever listed origin made the request. |
-| `SYMBOLS` | unset | Comma-separated instruments to create channels for at startup (e.g. `BTC,xyz:CL`), so viewers can connect before their feed does. Feeds for other symbols still create their channel on connect. On Railway, `scripts/start-railway.mjs` also starts one Neon replay per symbol listed here. |
-| `MAX_CLIENTS` | `500` | Concurrent `/live` browser-client cap, **across all instruments** (one budget, so adding instruments doesn't multiply it). A connection beyond this is closed immediately with code `1013` ("try again later"). The per-client cost is small (a `Set` entry plus whatever's still in its send buffer). |
-| `MAX_CHANNELS` | `256` | Backstop on how many instruments one relay holds. |
-| `INGEST_TOKEN` | unset (open) | Shared secret the gateway's hello handshake must include (`{"type":"hello","cpu_ghz":...,"symbol":"BTC","token":"..."}`) before its connection is treated as that instrument's upstream feed. **Strongly recommended for any deployment reachable from the public internet** — without it, anyone who finds the relay's URL can connect to `/ingest` and push arbitrary fake market data to every connected viewer. Leaving it unset preserves the original open behavior, which is fine for local dev but not for production. |
-| `DATABASE_URL` | unset | Neon Postgres connection string, used only by `migrate-to-neon.mjs` and `replay-gateway-neon.mjs` (see below) — the relay server itself (`src/index.ts`) never reads this. Use the **pooled** connection string from Neon's dashboard, not the direct one — see the Neon section below for why. Handle exactly like `INGEST_TOKEN`: set as a systemd `Environment=` line on the deployed unit, never committed. |
+## Neon tick storage
 
-## Deploying to an always-on Linux host (Oracle Cloud Free Tier)
+[`scripts/schema.sql`](scripts/schema.sql) creates `sessions` and `ticks`. The migration script imports a gateway export while preserving the original record order. `replay-gateway-neon.mjs` loads one session for a symbol from Neon at startup and streams it to `/ingest` at the capture's pace. The replay then runs from memory; Neon is not queried for every tick.
 
-Oracle Cloud's Always Free tier includes an ARM-based Ampere A1 VM (up to 4 OCPUs / 24GB RAM, permanently free, not a trial) — comfortably enough for this relay, which holds at most 12 hours of bucketed histogram counts (a few MB) plus whatever's buffered per connected client.
+For local migration, set `DATABASE_URL` in your shell and run:
 
-1. **Provision the VM.** Oracle Cloud Console → Compute → Instances → Create Instance. Pick the Ampere A1 shape, Ubuntu 22.04 (or later) as the image, and open a security-list ingress rule for whatever port you'll run the relay on (see `PORT` above) in addition to the default SSH rule.
-2. **Install Node.js** (v20+; this repo was built against v22+ — check with `node --version` after install):
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-   sudo apt-get install -y nodejs
-   ```
-3. **Clone the repo and install dependencies:**
-   ```bash
-   git clone <this-repo-url>
-   cd quant-command-center/project-2-L2-market-data-gateway/relay
-   npm install
-   npm run build     # compiles src/ to dist/ via tsc
-   ```
-4. **Set environment variables** and run. For a real deployment, generate a random token rather than typing one by hand:
-   ```bash
-   export PORT=8080
-   export CORS_ORIGIN=https://your-app.vercel.app
-   export MAX_CLIENTS=500
-   export INGEST_TOKEN=$(openssl rand -hex 32)
-   node dist/index.js
-   ```
-   Keep that `INGEST_TOKEN` value somewhere safe — it's what the C++ gateway's push client (a future phase; see the root README's roadmap) will need to be configured with to authenticate.
-5. **Keep it running** across reboots and crashes with `systemd` rather than a bare `node` process. Example unit file at `/etc/systemd/system/l2-relay.service`:
-   ```ini
-   [Unit]
-   Description=L2 Gateway Relay
-   After=network.target
+```bash
+node scripts/migrate-to-neon.mjs <session.ndjson.gz> --symbol=BTC --cpu-ghz=<capture_frequency>
+```
 
-   [Service]
-   Type=simple
-   WorkingDirectory=/home/ubuntu/quant-command-center/project-2-L2-market-data-gateway/relay
-   ExecStart=/usr/bin/node dist/index.js
-   Restart=on-failure
-   Environment=PORT=8080
-   Environment=CORS_ORIGIN=https://your-app.vercel.app
-   Environment=MAX_CLIENTS=500
-   Environment=INGEST_TOKEN=<the value from step 4>
+The Railway worker selects the latest stored session for each configured symbol and loops it. Keep the `.ndjson.gz` capture as the source archive; Neon is the queryable replay store.
 
-   [Install]
-   WantedBy=multi-user.target
-   ```
-   Then `sudo systemctl enable --now l2-relay`.
-5a. **Replay mode**, if you're not running a live gateway against this relay
-   (see the root [`README.md`](../README.md#known-limitations) and
-   [`BUGS.md`](../BUGS.md) for why this project currently does this in
-   production): `scripts/replay-gateway.mjs` connects to this relay's own
-   `/ingest` endpoint like a real gateway would, replaying a captured
-   `.ndjson.gz` session at real-time pace instead of live data. It parses
-   the original capture's start time directly out of the session's own
-   `session_<epoch_ms>.ndjson.gz` filename and sends it as `capturedAt` in
-   the `hello` handshake, along with `isReplay: true` — both are what drive
-   the web viewer's replay disclosure bar (`ReplayIndicator.tsx`). Example
-   unit file at `/etc/systemd/system/replay.service`, run on the SAME host
-   as `l2-relay` (the script's target is hardcoded to `localhost`) and only
-   ever instead of a live gateway, never alongside one:
-   ```ini
-   [Unit]
-   Description=Replay a real captured L2 session to l2-relay's own /ingest, looped
-   After=network.target l2-relay.service
-   Requires=l2-relay.service
+## Limits
 
-   [Service]
-   Type=simple
-   User=ubuntu
-   WorkingDirectory=/home/ubuntu/quant-command-center/project-2-L2-market-data-gateway/relay
-   ExecStart=/usr/bin/node scripts/replay-gateway.mjs /home/ubuntu/replay-data/session_<epoch_ms>.ndjson.gz 8080 <cpu_ghz> --loop
-   Restart=on-failure
-   RestartSec=5
-   Environment=INGEST_TOKEN=<the same value l2-relay.service uses>
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-   Then `sudo systemctl enable --now replay`. If a live gateway (`l2-gateway`
-   or similar) is already connected when this starts, stop it first —
-   `/ingest` is meant for one upstream connection at a time.
-6. **TLS.** The web viewer needs `wss://`/`https://`, not `ws://`/`http://`, once it's deployed on Vercel (mixed content is blocked by browsers). Put this relay behind a reverse proxy (Caddy is the simplest option — it handles Let's Encrypt certificates automatically) or a load balancer that terminates TLS, rather than trying to serve TLS from Node directly.
-7. **Point the web app at it** — set `NEXT_PUBLIC_RELAY_WS_URL=wss://your-domain/live` and `NEXT_PUBLIC_RELAY_HEALTH_URL=https://your-domain/health` in the Vercel project (see [`web/README.md`](../web/README.md)).
-
-## Tick data storage: Neon Postgres
-
-With a second instrument (WTI, `xyz:CL`) now real alongside BTC, a growing set of captured `.ndjson.gz` session files needing to be individually `scp`'d to whichever host runs the replay stopped being the right long-term approach — Neon Postgres is the canonical, queryable replay source going forward. `scripts/schema.sql` has the full design rationale in its own comments; short version: a `sessions` table (one row per captured file — symbol, capture timestamp, calibrated `cpu_ghz`) and a `ticks` table (one row per exported record, mirroring `ExportRecord`'s own sample/snapshot/coarse_snapshot/trade tagged union directly, ordered by a `seq` column so the original interleaved arrival order comes back with a plain `ORDER BY seq`).
-
-**The `.ndjson.gz` files are not replaced or deleted once loaded into Neon — they stay the durable cold backup and the only source `migrate-to-neon.mjs` ever reads from.** Neon is where a running `replay-gateway-neon.mjs` reads from; the files are what you'd re-run the migration against if the database were ever lost, wiped, or needed rebuilding with a schema change.
-
-1. **Create the schema** (once, against a fresh database):
-   ```bash
-   psql "$DATABASE_URL" -f scripts/schema.sql
-   ```
-2. **Load a captured session:**
-   ```bash
-   DATABASE_URL=postgres://... npm run migrate-to-neon -- ../data/export/session_<timestamp>.ndjson.gz --symbol=<SYM> --cpu-ghz=<GHZ>
-   ```
-   Safe to re-run against the same file — `sessions` is keyed `UNIQUE(symbol, captured_at_ms)`, so a repeat load replaces that session's `ticks` rows rather than duplicating them.
-3. **Replay from Neon instead of a file:**
-   ```bash
-   DATABASE_URL=postgres://... npm run replay-gateway-neon -- --symbol=<SYM> 8080 --loop
-   ```
-   Picks the most recent session loaded for that symbol. Same wire protocol, same pacing logic, same `--loop` behavior as the file-based `replay-gateway.mjs` — the only difference is where the tick data comes from.
-
-**Driver choice matters here.** `migrate-to-neon.mjs` is a short-lived batch job — a plain `pg` `Client` (one connection, a batch of inserts, exit) is the right tool, with no connection-lifecycle concerns worth solving for a process that finishes in seconds. `replay-gateway-neon.mjs` is different: it's meant to run under systemd indefinitely, and Neon's free tier autosuspends its compute endpoint after a period of inactivity — a persistent connection would need its own reconnect-on-idle handling to survive that reliably. Rather than building that, `replay-gateway-neon.mjs` uses `@neondatabase/serverless`'s HTTP driver and loads an entire session into memory in **one** query at startup, exactly like the file-based script reads its whole file up front. After that single query, the real-time pacing loop runs purely from memory for the rest of the process's life — Neon can autosuspend at any point after startup without affecting a running replay at all.
-
-**Does this replace the flat-file approach entirely?** No, by design — see above. The files are the origin data (only the C++ gateway's `ColdPathExporter` produces them) and the safety net; Neon is the queryable, symbol-indexed read path an operational replay service actually wants, and one that no longer requires physically copying a file to whatever host is going to serve it.
-
-**Status**: schema and both scripts are complete and syntax/type-checked, but not yet run against a real Neon database as of this writing — pending provisioning a Neon project and handing over its pooled connection string. `replay.service`/`replay-wti.service` deployment against Neon (rather than the current file-based `replay.service` on `l2-relay`) is a followup once that's in hand.
-
-## What this service does *not* do
-
-No persistence across its own restarts (the 12-hour rolling stats are in-memory only — a relay restart loses that history, though a reconnecting gateway resumes immediately), no authentication on `/live` or `/health` (they're read-only and rate-limited only by `MAX_CLIENTS`), no TLS termination (put a reverse proxy in front for that).
+Latency aggregates are held in relay memory for a rolling one-hour window and reset when Railway restarts the relay. Captured tick sessions persist in Neon. The relay does not terminate TLS itself; the public deployment relies on Railway's HTTPS/WSS endpoint.
