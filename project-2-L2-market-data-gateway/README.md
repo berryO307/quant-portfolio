@@ -49,7 +49,7 @@ Charts were migrated from uPlot to ECharts as the latency view grew to include a
 ## Engineering decisions
 
 - **SPSC ring buffer:** one producer and one consumer exchange fixed-size ticks using acquire/release atomics. Cache-line separation limits false sharing; the hot path does not take a mutex.
-- **Memory-mapped capture:** the gateway writes fixed-size records into a preallocated mapped region and leaves compression and file export to a cold-path worker. This avoids a file-write syscall for every tick; it is not a NIC kernel-bypass design.
+- **Memory-mapped capture:** each fixed-size record is copied once into a preallocated mapped region, avoiding a per-tick `write()` and an extra kernel I/O buffer copy. Compression and file export run on a cold-path worker. This is not NIC kernel bypass.
 - **Thread affinity with collision checks:** each gateway instance claims one physical core; its producer runs on that core's SMT sibling, while the consumer gets the core. The earlier hard-coded assignments silently put two instrument consumers on one physical core and caused scheduler-quantum-sized queue delays.
 - **L2 scope:** the book represents aggregated quantity by price level. It does not reconstruct per-order L3 queue position.
 - **Measure the stages that matter:** each stage has its own timestamp boundary. Batch wait is kept distinct from queue transit so time in a received frame is not attributed to the SPSC queue.
@@ -90,7 +90,7 @@ Open `http://localhost:3000`. The fake gateway supplies protocol-shaped sample d
 
 ### Replay from Neon
 
-The relay package includes scripts to create the schema, migrate an exported `.ndjson.gz` session, and replay a stored session. Set `DATABASE_URL` in your local environment, then use `relay/scripts/schema.sql`, `migrate-to-neon.mjs`, and `replay-gateway-neon.mjs` as documented in [relay/README.md](relay/README.md#tick-data-storage-neon-postgres). Keep connection strings and ingest credentials out of Git.
+The relay package includes scripts to create the schema, migrate an exported `.ndjson.gz` session, and replay a stored session. Set `DATABASE_URL` in your local environment, then use `relay/scripts/schema.sql`, `migrate-to-neon.mjs`, and `replay-gateway-neon.mjs` as documented in [relay/README.md](relay/README.md#neon-tick-storage). Keep connection strings and ingest credentials out of Git.
 
 ## Deployment
 
