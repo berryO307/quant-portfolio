@@ -10,6 +10,12 @@ export const RELAY_WS_URL =
 export const RELAY_HEALTH_URL =
   process.env.NEXT_PUBLIC_RELAY_HEALTH_URL ?? "http://localhost:8080/health";
 
+// Second instrument (WTI / xyz:CL). Unset locally, so it falls back to the
+// localhost:8085 relay in instruments.ts. On a hosted deploy it must be set:
+// left at localhost, a visitor's browser would try its OWN machine.
+export const RELAY_CL_WS_URL = process.env.NEXT_PUBLIC_RELAY_CL_WS_URL;
+export const RELAY_CL_HEALTH_URL = process.env.NEXT_PUBLIC_RELAY_CL_HEALTH_URL;
+
 // Which instrument each relay endpoint is actually serving is NOT wired to
 // the wire protocol at all — it never carries a symbol (see
 // relay/src/types.ts; SampleRecord/SnapshotRecord/TradeRecord are all

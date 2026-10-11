@@ -27,7 +27,7 @@
 // ticks table is cleared and reloaded for that session_id first).
 import { Client } from "pg";
 import { createReadStream } from "node:fs";
-import { createGunzip } from "node:zlib";
+import { constants, createGunzip } from "node:zlib";
 import { createInterface } from "node:readline";
 import { basename } from "node:path";
 
@@ -65,7 +65,11 @@ function tscOf(record) {
 }
 
 async function* readRecords(path) {
-  const stream = createReadStream(path).pipe(createGunzip());
+  // Z_SYNC_FLUSH: a capture whose gateway was killed (the normal way it
+  // stops) never wrote its gzip trailer, and strict gunzip throws
+  // Z_BUF_ERROR at the end of the stream before the line-level tolerance
+  // below ever runs. This flushes what decoded instead.
+  const stream = createReadStream(path).pipe(createGunzip({ finishFlush: constants.Z_SYNC_FLUSH }));
   const rl = createInterface({ input: stream, crlfDelay: Infinity });
   for await (const line of rl) {
     if (!line.trim()) continue;
@@ -150,6 +154,11 @@ async function main() {
   try {
     console.log(`[migrate] ${basename(filePath)} -> symbol=${SYMBOL} captured_at_ms=${CAPTURED_AT_MS}`);
 
+    // One transaction: a load that fails partway used to leave a sessions
+    // row with record_count=0 and every batch inserted so far, which the
+    // replay could then pick up as a real session.
+    await client.query("BEGIN");
+
     const upsert = await client.query(
       `INSERT INTO sessions (symbol, captured_at_ms, cpu_ghz, source_file)
        VALUES ($1, $2, $3, $4)
@@ -186,10 +195,14 @@ async function main() {
     await insertBatch(client, sessionId, batch);
 
     await client.query("UPDATE sessions SET record_count = $1 WHERE id = $2", [seq, sessionId]);
+    await client.query("COMMIT");
 
     console.log(
       `[migrate] loaded ${seq} ticks into session ${sessionId}${skipped > 0 ? ` (skipped ${skipped} unrecognized records)` : ""}`
     );
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
   } finally {
     await client.end();
   }
