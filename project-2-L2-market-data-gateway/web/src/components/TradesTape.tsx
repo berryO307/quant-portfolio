@@ -17,6 +17,12 @@ interface TradesTapeProps {
   // display width that was never actually tied to the instrument.
   priceDecimals: number;
   qtyDecimals: number;
+  // Whether a historical capture is what's being rendered (Dashboard's
+  // showingReplay). Changes the TIME COLUMN'S LABEL only -- never a
+  // timestamp, a price, a size, a side colour or the row order. A trade's
+  // time is already the exchange's own event_time_ms from the capture (see
+  // TradeRow); this just stops that column reading as the current clock.
+  isReplay?: boolean;
 }
 
 // Phase 8.5's third pass: dropped the scroll+virtualization approach for a
@@ -26,7 +32,7 @@ interface TradesTapeProps {
 // container, and only that many (of the newest trades) are ever rendered;
 // useRelayConnection also caps the underlying array itself at MAX_TRADES,
 // well past what any realistic tape height needs.
-export function TradesTape({ trades, priceDecimals, qtyDecimals }: TradesTapeProps) {
+export function TradesTape({ trades, priceDecimals, qtyDecimals, isReplay = false }: TradesTapeProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [visibleRows, setVisibleRows] = useState(0);
 
@@ -48,7 +54,12 @@ export function TradesTape({ trades, priceDecimals, qtyDecimals }: TradesTapePro
       <div className="grid grid-cols-3 gap-2 border-b border-border px-3 py-1 text-[10px] uppercase tracking-wide text-muted-foreground">
         <span>Price</span>
         <span className="text-right">Size</span>
-        <span className="text-right">Time</span>
+        {/* The column itself is unchanged; only what it's called. "Recorded
+            time" is the honest name for a capture's own event times, and it
+            still fits the column at 375px. */}
+        <span className={`text-right ${isReplay ? "whitespace-nowrap text-brand-amber" : ""}`}>
+          {isReplay ? "Recorded time" : "Time"}
+        </span>
       </div>
 
       {/* The measured container is always mounted, empty or not: the
