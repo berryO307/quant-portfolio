@@ -4,6 +4,8 @@ import { useEffect, useMemo, useRef, useState, MouseEvent } from "react";
 
 import { type StatsMessage } from "@/lib/types";
 
+import { RecordedBadge } from "./ReplayNotice";
+
 import {
   aggregateHistoricalLatency,
   RANGE_MS,
@@ -39,6 +41,13 @@ import {
 interface LatencyPanelProps {
   cpuGhz: number;
   stats: StatsMessage | null;
+  // A historical capture is what's being rendered (Dashboard's
+  // showingReplay). Adds a "Recorded" chip to the two chart headers below;
+  // changes no metric, definition, unit, colour or time range. See
+  // RecordedBadge for the nuance the chip's tooltip carries: in replay the
+  // latency VALUES come from the capture, while the time axis is when the
+  // relay streamed them.
+  isReplay?: boolean;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -276,6 +285,7 @@ const ALL_METRICS_VISIBLE: Record<PercentileMetric, boolean> = {
 export function LatencyPanel({
   cpuGhz: _cpuGhz,
   stats,
+  isReplay = false,
 }: LatencyPanelProps) {
   const { containerRef, chartRef, setOption } = useECharts();
 
@@ -1605,8 +1615,13 @@ export function LatencyPanel({
 
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-sm font-medium text-foreground">
-                Historical Summary
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium text-foreground">
+                  Historical Summary
+                </span>
+                {isReplay && (
+                  <RecordedBadge title="Latency measured during the original capture. The time axis below is when the relay streamed those samples, not when they were captured." />
+                )}
               </div>
 
               <div className="text-[11px] text-muted-foreground">
@@ -1912,8 +1927,13 @@ export function LatencyPanel({
         <div className="min-h-[300px] w-full shrink-0 rounded-lg border border-border bg-panel p-2">
           <div className="mb-1 flex items-center justify-between px-1">
             <div>
-              <div className="text-sm font-medium text-foreground">
-                Latency Distribution
+              <div className="flex items-center gap-1.5">
+                <span className="text-sm font-medium text-foreground">
+                  Latency Distribution
+                </span>
+                {isReplay && (
+                  <RecordedBadge title="Latency measured during the original capture. The time axis is when the relay streamed those samples, not when they were captured." />
+                )}
               </div>
 
               <div className="text-[10px] font-semibold text-muted-foreground">
