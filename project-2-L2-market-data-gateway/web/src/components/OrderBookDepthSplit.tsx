@@ -85,6 +85,12 @@ function snapToRowHeight(rawHeight: number, ceiling: number, minRows: number): n
 interface OrderBookDepthSplitProps {
   snapshot: SnapshotRecord | null;
   bucketedSnapshot: SnapshotRecord | CoarseSnapshotRecord | null;
+  // True once the connection has been healthy for an unreasonable amount
+  // of time with no snapshot at all (see useRelayConnection's own comment
+  // on SNAPSHOT_TIMEOUT_MS) -- lets the two "waiting" states below say
+  // something more useful than an indefinite ellipsis once that's been
+  // true long enough to actually mean something.
+  snapshotTimedOut: boolean;
   instrument: InstrumentConfig;
   bucketSize: number;
   onBucketSizeChange: (size: number) => void;
@@ -123,6 +129,7 @@ interface OrderBookDepthSplitProps {
 export function OrderBookDepthSplit({
   snapshot,
   bucketedSnapshot,
+  snapshotTimedOut,
   instrument,
   bucketSize,
   onBucketSizeChange,
@@ -226,6 +233,7 @@ export function OrderBookDepthSplit({
         <OrderBookLadder
           snapshot={snapshot}
           bucketedSnapshot={bucketedSnapshot}
+          snapshotTimedOut={snapshotTimedOut}
           instrument={instrument}
           bucketSize={bucketSize}
           onBucketSizeChange={onBucketSizeChange}
@@ -282,6 +290,7 @@ export function OrderBookDepthSplit({
         <DepthCurve
           snapshot={bucketedSnapshot}
           primarySnapshot={snapshot}
+          snapshotTimedOut={snapshotTimedOut}
           hoveredPrice={hoveredPrice}
           onHoverPrice={onHoverPrice}
           priceDecimals={instrument.priceDecimals}

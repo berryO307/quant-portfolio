@@ -53,6 +53,7 @@ export function Dashboard() {
     capturedAt,
     isReplay,
     symbolMismatch,
+    snapshotTimedOut,
     latestSnapshot,
     coarseSnapshots,
     trades,
@@ -241,6 +242,7 @@ export function Dashboard() {
               <OrderBookDepthSplit
                 snapshot={latestSnapshot}
                 bucketedSnapshot={bucketedSnapshot}
+                snapshotTimedOut={snapshotTimedOut}
                 instrument={instrument}
                 bucketSize={bucketSize}
                 onBucketSizeChange={setBucketSize}
