@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 
 import { Microtape } from "./Microtape";
+import { orderbookHref } from "@/lib/instruments";
 import { useTheme } from "@/lib/useTheme";
 import { useSidebarState } from "@/lib/sidebarState";
 
@@ -175,7 +176,7 @@ export function TopBar() {
     <header className="flex h-[52px] shrink-0 items-center justify-between border-b border-border bg-panel px-3">
       <div className="flex min-w-0 items-center gap-2.5">
         <MobileMenuButton />
-        <Link href="/orderbook" aria-label="Go to Order Book">
+        <Link href={orderbookHref()} aria-label="Go to Order Book">
           <Microtape />
         </Link>
       </div>

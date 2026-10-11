@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useRelayConnection } from "@/lib/useRelayConnection";
-import { defaultBucketSize, type InstrumentConfig } from "@/lib/instruments";
+import { defaultBucketSize, orderbookHref, type InstrumentConfig } from "@/lib/instruments";
 import { relayHealthUrl, relayLiveUrl } from "@/lib/config";
 import { pickBestSnapshot } from "@/lib/orderBook";
 import { useFeedModeState } from "@/lib/feedModeState";
@@ -44,7 +44,7 @@ export function Dashboard({ instrument }: { instrument: InstrumentConfig }) {
   // Switching instrument is navigation: it writes ?symbol= into the URL and
   // the page renders the matching instrument (push, so Back undoes it).
   function handleInstrumentChange(next: InstrumentConfig) {
-    router.push(`/orderbook?${new URLSearchParams({ symbol: next.symbol })}`, { scroll: false });
+    router.push(orderbookHref(next.symbol), { scroll: false });
   }
   const {
     wsConnected,

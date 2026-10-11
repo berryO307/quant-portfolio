@@ -118,6 +118,13 @@ export const INSTRUMENTS: InstrumentConfig[] = [
   },
 ];
 
+// Every order book URL names its instrument, the default one included:
+// /orderbook?symbol=BTC. app/orderbook/page.tsx redirects a bare or
+// unknown-symbol /orderbook here.
+export function orderbookHref(symbol: string = INSTRUMENTS[0]!.symbol): string {
+  return `/orderbook?${new URLSearchParams({ symbol })}`;
+}
+
 // Picks a sensible default bucket size from ANY instrument's own
 // priceBucketOptions, without hardcoding a per-instrument index or needing
 // to know the instrument's price magnitude/tick size. Each instrument's own

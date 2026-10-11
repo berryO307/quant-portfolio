@@ -275,7 +275,9 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
           const parseBegin = parsed.t_parse_begin ?? parsed.t_recv;
           pendingSamplesRef.current.push({
             tRecvTsc: parsed.t_recv,
-            latencyNs: (parsed.t_publish - parsed.t_recv) / ghz,
+            // From parse start, not t_recv: in-frame wait is excluded from
+            // total latency (same definition as the relay's aggregator).
+            latencyNs: (parsed.t_publish - parseBegin) / ghz,
             inFrameNs: (parseBegin - parsed.t_recv) / ghz,
             parseNs: (parsed.t_parse - parseBegin) / ghz,
             queueNs: (pop - parsed.t_parse) / ghz,
