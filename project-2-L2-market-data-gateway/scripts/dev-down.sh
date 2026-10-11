@@ -31,7 +31,6 @@ stop_pid() {
 stop_pid "gateway xyz:CL"     "$RUN_DIR/gateway-cl.pid"
 stop_pid "gateway BTC"        "$RUN_DIR/gateway-btc.pid"
 stop_pid "web :3000"          "$RUN_DIR/web.pid"
-stop_pid "relay :8085"        "$RUN_DIR/relay-8085.pid"
 stop_pid "relay :8080"        "$RUN_DIR/relay-8080.pid"
 
 echo "[dev-down] done — anything not started by dev-up.sh (no .pid file) was left alone"

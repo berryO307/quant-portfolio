@@ -4,11 +4,14 @@
 // then sample/snapshot/trade records with the exact field names ColdPathExporter
 // writes (see include/export_pipeline.hpp and relay/src/types.ts).
 //
-// Usage: node scripts/fake-gateway.mjs [relayPort=8080]
+// Usage: node scripts/fake-gateway.mjs [relayPort=8080] [--symbol=BTC]
 // Set INGEST_TOKEN to match the relay's if it's running with one configured.
+// The relay routes a feed to its instrument channel by the hello's symbol.
 import WebSocket from "ws";
 
-const PORT = Number(process.argv[2] ?? process.env.PORT ?? 8080);
+const args = process.argv.slice(2);
+const PORT = Number(args.find((a) => /^\d+$/.test(a)) ?? process.env.PORT ?? 8080);
+const SYMBOL = args.find((a) => a.startsWith("--symbol="))?.slice("--symbol=".length) ?? "BTC";
 const CPU_GHZ = 3.2;
 const INGEST_TOKEN = process.env.INGEST_TOKEN;
 
@@ -19,6 +22,7 @@ gw.on("open", () => {
   gw.send(JSON.stringify({
     type: "hello",
     cpu_ghz: CPU_GHZ,
+    symbol: SYMBOL,
     ...(INGEST_TOKEN ? { token: INGEST_TOKEN } : {}),
   }));
 

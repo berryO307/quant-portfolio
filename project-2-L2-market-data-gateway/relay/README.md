@@ -1,13 +1,31 @@
 # L2 Gateway Relay
 
-The only 24/7 piece of this system. Receives data pushed from the C++ gateway (an ephemeral, per-session process) over a single upstream WebSocket connection, fans it out to any number of browser clients, and maintains a 12-hour rolling latency view that survives gateway restarts. See the root [README](../README.md#the-full-observability-stack) for how this fits into the rest of the pipeline.
+The only 24/7 piece of this system. Receives data pushed from gateways (ephemeral, per-session processes, one per instrument) and fans it out to any number of browser clients, keeping a rolling latency view per instrument that survives gateway restarts. One relay serves every instrument. See the root [README](../README.md#the-full-observability-stack) for how this fits into the rest of the pipeline.
+
+## Endpoints and routing
+
+Each instrument is a **channel** (`src/channel.ts`): its own upstream feed, viewers, snapshot cache and stats.
+
+| Endpoint | Who uses it | Instrument chosen by |
+| --- | --- | --- |
+| `ws /ingest` | gateways / replays (push) | the `symbol` in the first message (the hello) |
+| `ws /live?symbol=BTC` | browsers (watch) | query string |
+| `GET /health?symbol=BTC` | browsers | query string; `503` until that feed is connected, `404` for an unknown symbol |
+| `GET /health` | ops / platform | whole relay: `200` only if every channel has its feed, with a per-channel map |
+| `GET /stats?symbol=BTC` | debugging | query string |
+| `GET /symbols` | ops | lists every channel with feed status and viewer count |
+
+Symbols contain `:` (e.g. `xyz:CL`), so URL-encode them: `/live?symbol=xyz%3ACL`.
+
+Only an authenticated ingest connection (or the `SYMBOLS` list) can create a channel. A browser asking for an unknown symbol is closed with `1008`; it can never create one, so viewers can't grow the relay's memory.
 
 ## Local development
 
 ```bash
 npm install
 npm run dev              # starts the relay on :8080
-npm run fake-gateway      # in a second terminal — simulates the C++ gateway's push connection
+npm run fake-gateway      # in a second terminal — simulates the C++ gateway's push connection (symbol BTC)
+npm run fake-gateway -- --symbol=xyz:CL   # a second instrument into the same relay
 ```
 
 `scripts/fake-gateway.mjs` speaks the exact same wire protocol a real gateway push client would (hello handshake, then sample/snapshot/trade records) — it's what the [web viewer](../web/README.md) can be developed against without running the full C++ capture stack. Pass a port as an argument (`npm run fake-gateway -- 8091`) to match a relay started on a non-default port, and set `INGEST_TOKEN` to match if the relay is running with one configured (see below).
@@ -32,8 +50,10 @@ Without `--loop`, this does exactly one real-time pass through the file and then
 | --- | --- | --- |
 | `PORT` | `8080` | The port this process listens on — both the `/ingest` WebSocket the gateway connects to and the `/live`, `/health`, `/stats` endpoints the web viewer uses. This *is* "the gateway connection address": combined with the host's public IP, `ws://<host>:<PORT>/ingest` (or `wss://` behind a TLS-terminating proxy) is what a gateway-side push client needs to be configured to connect to. |
 | `CORS_ORIGIN` | `*` | `Access-Control-Allow-Origin` on `/health` and `/stats`, which the browser polls cross-origin. Defaults open for local dev; **set this to your deployed web app's exact origin in production** (e.g. `https://your-app.vercel.app`) so other sites can't read these endpoints from a visitor's browser. |
-| `MAX_CLIENTS` | `500` | Concurrent `/live` browser-client cap enforced by `ConnectionManager`. A connection beyond this is closed immediately with code `1013` ("try again later"). Raise this if you expect more concurrent viewers than that; the per-client cost is small (a `Set` entry plus whatever's still in its send buffer). |
-| `INGEST_TOKEN` | unset (open) | Shared secret the gateway's hello handshake must include (`{"type":"hello","cpu_ghz":...,"token":"..."}`) before its connection is treated as the upstream feed. **Strongly recommended for any deployment reachable from the public internet** — without it, anyone who finds the relay's URL can connect to `/ingest` and push arbitrary fake market data to every connected viewer. Leaving it unset preserves the original open behavior, which is fine for local dev but not for production. |
+| `SYMBOLS` | unset | Comma-separated instruments to create channels for at startup (e.g. `BTC,xyz:CL`), so viewers can connect before their feed does. Feeds for other symbols still create their channel on connect. On Railway, `scripts/start-railway.mjs` also starts one Neon replay per symbol listed here. |
+| `MAX_CLIENTS` | `500` | Concurrent `/live` browser-client cap, **across all instruments** (one budget, so adding instruments doesn't multiply it). A connection beyond this is closed immediately with code `1013` ("try again later"). The per-client cost is small (a `Set` entry plus whatever's still in its send buffer). |
+| `MAX_CHANNELS` | `256` | Backstop on how many instruments one relay holds. |
+| `INGEST_TOKEN` | unset (open) | Shared secret the gateway's hello handshake must include (`{"type":"hello","cpu_ghz":...,"symbol":"BTC","token":"..."}`) before its connection is treated as that instrument's upstream feed. **Strongly recommended for any deployment reachable from the public internet** — without it, anyone who finds the relay's URL can connect to `/ingest` and push arbitrary fake market data to every connected viewer. Leaving it unset preserves the original open behavior, which is fine for local dev but not for production. |
 | `DATABASE_URL` | unset | Neon Postgres connection string, used only by `migrate-to-neon.mjs` and `replay-gateway-neon.mjs` (see below) — the relay server itself (`src/index.ts`) never reads this. Use the **pooled** connection string from Neon's dashboard, not the direct one — see the Neon section below for why. Handle exactly like `INGEST_TOKEN`: set as a systemd `Environment=` line on the deployed unit, never committed. |
 
 ## Deploying to an always-on Linux host (Oracle Cloud Free Tier)

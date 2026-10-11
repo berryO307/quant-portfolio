@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRelayConnection } from "@/lib/useRelayConnection";
 import { INSTRUMENTS, defaultBucketSize } from "@/lib/instruments";
+import { relayHealthUrl, relayLiveUrl } from "@/lib/config";
 import { pickBestSnapshot } from "@/lib/orderBook";
 import { useFeedModeState } from "@/lib/feedModeState";
 import { FeedStatusBanner } from "./FeedStatusBanner";
@@ -59,7 +60,7 @@ export function Dashboard() {
     trades,
     recentSamples,
     stats,
-  } = useRelayConnection(instrument.relayWsUrl, instrument.relayHealthUrl, instrument.symbol);
+  } = useRelayConnection(relayLiveUrl(instrument.symbol), relayHealthUrl(instrument.symbol), instrument.symbol);
 
   // Connection has to actually be healthy before isReplay means anything --
   // useRelayConnection defaults isReplay to false before the first real
