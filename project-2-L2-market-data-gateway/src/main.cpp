@@ -181,59 +181,30 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
     
     if (stop.load(std::memory_order_relaxed)) return;
 
-    // Bounded spin budget for the empty-queue case below: enough pop()
-    // attempts to catch a tick that arrives within a few microseconds
-    // without ever calling into the OS scheduler, small enough that a
-    // genuinely idle stretch (this feed runs ~3-13 ticks/sec, so idle
-    // stretches are the common case, not the exception) still falls
-    // through to sleep quickly. Not tuned to a specific number of
-    // microseconds — see FIX 2's comment below for why a time-based
-    // budget isn't the point here.
-    static constexpr int kPopSpinIters = 256;
-
-    // TRIED AND REVERTED (see git history / PR description for the round
-    // this happened in): replacing the sleep_for(100us) fallback below with
-    // indefinite PAUSE-hinted spinning, on the theory that a voluntary sleep
-    // exposes this thread's wake-up to ordinary Windows scheduling variance
-    // because it is not Administrator-elevated and therefore not actually
-    // running at REALTIME_PRIORITY_CLASS (confirmed live — see main()'s own
-    // priority check and the startup warning it prints).
+    // Idle strategy: SPIN. This thread owns its claimed core (see
+    // configure_hot_cores), so busy-polling both rings with a PAUSE hint
+    // costs nothing anyone else needs, and a tick is picked up within
+    // microseconds (queue p50 ~5us measured) instead of after an OS wake-up.
     //
-    // That theory is half right and the fix didn't follow from it. A live
-    // before/after capture off this box's own /live feed, same duration,
-    // same conditions, caught a WORSE stall with indefinite spinning (CL:
-    // 3.60ms, one single-tick frame, flat-offset — not a batch ramp) than
-    // sleep_for ever produced in the same 2-3 minute window (1.39-1.68ms).
-    // A thread that is continuously spinning, never voluntarily yielding,
-    // has no wake-up to be delayed — so a stall that still happens while it
-    // spins cannot be wake-latency. It is the OS involuntarily preempting
-    // this thread regardless of whether it is sleeping or running, which is
-    // exactly what HIGH_PRIORITY_CLASS (not REALTIME) does not protect
-    // against. Spinning instead of sleeping bought nothing and cost a full
-    // core at 100% permanently, so it was reverted rather than kept as a
-    // speculative "might still help" change. Real fix, if this is worth
-    // closing: run elevated for genuine REALTIME_PRIORITY_CLASS — an
-    // operational change, not one this loop can make for itself.
+    // Correction to this loop's history: it used to fall back to
+    // sleep_for(100us) after each spin round, and a comment here recorded an
+    // experiment that replaced that sleep with indefinite spinning and was
+    // reverted as no better. On this toolchain sleep_for(100us) returns in
+    // 0us (see idle_sleep() in thread_utils.hpp), so the thread was spinning
+    // in BOTH arms of that experiment: it compared spin against spin, and
+    // the 1-3ms stalls it saw were preemption in either arm. The fallback is
+    // gone so the code says what it does.
+    //
+    // The ~32ms stalls seen later (2 scheduler ticks, exactly) came from the
+    // other gateway's export thread busy-spinning at the same priority and
+    // landing on this core; that thread now really sleeps. Preemption by
+    // higher-priority system work is still possible short of
+    // REALTIME_PRIORITY_CLASS, which needs an elevated process.
+    static constexpr int kPopSpinIters = 256; // pops between stop-flag checks
+
     while (!stop.load(std::memory_order_relaxed)) {
-        // FIX 2 (original): Replaced blocking pop_for() (ThreadQueue condvar API)
-        // with non-blocking SpscRingBuffer::pop() + microsecond sleep — still true,
-        // SpscRingBuffer has no condvar/mutex to block on.
-        //
-        // FIX 2 (this round): the plain sleep_for(100us) that used to sit directly
-        // below is not reliable at that resolution on Windows — measured live,
-        // a bare sleep_for(100us) here returned in either a near-no-op or,
-        // occasionally, multi-millisecond — the OS timer quantum, not a fixed
-        // 100us floor. Live evidence: comparing queue_ns for pops that left the
-        // queue empty afterward, BEFORE this fix, showed p90=11-12ms and
-        // max=15-16ms on both BTC and WTI — nearly identical to the backlogged
-        // case, which a "just the pipeline is busy" explanation wouldn't predict.
-        //
-        // Fixed by the same spin+pause backoff already used a few dozen lines up
-        // for the pre-seed wait (same file): try pop() with a PAUSE hint between
-        // attempts for a bounded number of iterations first — cheap, and catches
-        // the common case of a tick landing microseconds after the last check —
-        // and only fall back to sleep_for once genuinely idle, so this thread
-        // isn't pegging a core at 100% during the real dead time between bursts.
+        // Non-blocking SpscRingBuffer::pop() on both rings: there's no
+        // condvar/mutex to block on, by design.
         Tick tick;
         bool got_tick = false;
         for (int spin = 0; spin < kPopSpinIters; ++spin) {
@@ -249,10 +220,7 @@ static void consumer_loop(SpscRingBuffer<Tick, 1024>& depth_queue,
             __builtin_ia32_pause();
 #endif
         }
-        if (!got_tick) {
-            std::this_thread::sleep_for(std::chrono::microseconds(100));
-    continue;
-        }
+        if (!got_tick) continue; // keep spinning; see the note above this loop
 
         uint64_t t3 = rdtscp();
 

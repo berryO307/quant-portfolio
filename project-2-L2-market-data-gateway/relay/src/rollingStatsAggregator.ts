@@ -1,6 +1,12 @@
 import type { DataSource } from "./dataSource.js";
-import type { IngestRecord, LatencyBucketSnapshot } from "./types.js";
-import { Histogram, snapshotFromCounts, BUCKET_BOUNDARIES, type HistogramSnapshot } from "./histogram.js";
+import type {
+  IngestRecord,
+  LatencyBucketSnapshot,
+  StatsFullMessage,
+  StatsUpdateMessage,
+  WireLatencyBucket,
+} from "./types.js";
+import { Histogram, snapshotFromCounts, toWireHistogram, BUCKET_BOUNDARIES, type HistogramSnapshot } from "./histogram.js";
 
 const BUCKET_MS = 10_000;
 const RETENTION_BUCKETS = 360;
@@ -85,6 +91,9 @@ interface LatencyStats {
 export class RollingStatsAggregator {
   private buckets = new Map<number, LatencyBucket>();
   private sessionHistogram = new Histogram();
+  // Bucket ids that received samples since the last takeUpdate(): the only
+  // ones a viewer that already has the history needs again.
+  private dirty = new Set<number>();
 
   constructor(private readonly source: DataSource) {
     this.source.on("record", this.handleRecord);
@@ -147,6 +156,7 @@ export class RollingStatsAggregator {
       this.buckets.set(bucketId, bucket);
       this.evictStale(bucketId);
     }
+    this.dirty.add(bucketId);
     bucket.total.record(stats.totalNs);
     bucket.in_frame.record(stats.inFrameNs);
     bucket.parse.record(stats.parseNs);
@@ -188,6 +198,59 @@ export class RollingStatsAggregator {
       .sort((a, b) => a.timestampMs - b.timestampMs)
       .map((bucket) => this.snapshotBucket(bucket)),
     };
+  }
+
+  private wireBucket(bucket: LatencyBucket): WireLatencyBucket {
+    const s = this.snapshotBucket(bucket);
+    return {
+      timestampMs: s.timestampMs,
+      total: toWireHistogram(s.total),
+      inFrame: toWireHistogram(s.inFrame),
+      parse: toWireHistogram(s.parse),
+      queue: toWireHistogram(s.queue),
+      bookUpdate: toWireHistogram(s.bookUpdate),
+      publish: toWireHistogram(s.publish),
+    };
+  }
+
+  /** Everything retained, for a viewer that just connected. */
+  fullMessage(): StatsFullMessage {
+    return {
+      type: "stats_full",
+      binCount: BUCKET_BOUNDARIES.length,
+      rollingWindow: toWireHistogram(this.rollingSnapshot()),
+      currentSession: toWireHistogram(this.sessionHistogram.snapshot()),
+      latencyBuckets: [...this.buckets.values()]
+        .sort((a, b) => a.timestampMs - b.timestampMs)
+        .map((bucket) => this.wireBucket(bucket)),
+    };
+  }
+
+  /** Buckets changed since the previous call (null if none), for viewers
+   * that already hold the history. Clears the change set. */
+  takeUpdate(): StatsUpdateMessage | null {
+    if (this.dirty.size === 0) return null;
+    const changed = [...this.dirty]
+      .map((id) => this.buckets.get(id))
+      .filter((b): b is LatencyBucket => b !== undefined)
+      .sort((a, b) => a.timestampMs - b.timestampMs);
+    this.dirty.clear();
+    let oldest = Infinity;
+    for (const b of this.buckets.values()) oldest = Math.min(oldest, b.timestampMs);
+    return {
+      type: "stats_update",
+      binCount: BUCKET_BOUNDARIES.length,
+      rollingWindow: toWireHistogram(this.rollingSnapshot()),
+      currentSession: toWireHistogram(this.sessionHistogram.snapshot()),
+      latencyBuckets: changed.map((bucket) => this.wireBucket(bucket)),
+      oldestTimestampMs: Number.isFinite(oldest) ? oldest : 0,
+    };
+  }
+
+  /** Nobody is watching: forget what changed. A viewer that connects later
+   * starts from fullMessage() anyway. */
+  clearUpdate(): void {
+    this.dirty.clear();
   }
 
   stop(): void {

@@ -51,15 +51,20 @@ export function TradesTape({ trades, priceDecimals, qtyDecimals }: TradesTapePro
         <span className="text-right">Time</span>
       </div>
 
-      {trades.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center text-muted-foreground">Waiting for trades…</div>
-      ) : (
-        <div ref={containerRef} className="flex-1 overflow-hidden">
-          {visible.map((trade) => (
+      {/* The measured container is always mounted, empty or not: the
+          ResizeObserver above attaches once, on mount. It used to exist only
+          once trades had arrived, so a tape opened while still empty (a
+          quiet instrument like WTI, right after switching to it) never got
+          measured, stayed at 0 visible rows, and never showed a trade. */}
+      <div ref={containerRef} className="flex flex-1 flex-col overflow-hidden">
+        {trades.length === 0 ? (
+          <div className="flex flex-1 items-center justify-center text-muted-foreground">Waiting for trades…</div>
+        ) : (
+          visible.map((trade) => (
             <TradeRow key={trade.trade_id} trade={trade} priceDecimals={priceDecimals} qtyDecimals={qtyDecimals} />
-          ))}
-        </div>
-      )}
+          ))
+        )}
+      </div>
     </div>
   );
 }

@@ -106,6 +106,20 @@ export class Histogram {
   }
 }
 
+import type { WireHistogram } from "./types.js";
+
+// Wire form of a snapshot: the dense counts array (1,854 bins, nearly all
+// zero for a 10s bucket) replaced by its non-empty bins only. See
+// StatsFullMessage in types.ts for why this matters.
+export function toWireHistogram(s: HistogramSnapshot): WireHistogram {
+  const bins: [number, number][] = [];
+  for (let i = 0; i < s.counts.length; i++) {
+    const c = s.counts[i]!;
+    if (c !== 0) bins.push([i, c]);
+  }
+  return { count: s.count, maxNs: s.maxNs, p50Ns: s.p50Ns, p99Ns: s.p99Ns, p999Ns: s.p999Ns, bins };
+}
+
 // Single arbitrary-percentile lookup over bucket counts, same cumulative-
 // count method as snapshotFromCounts below. Percentiles are exactly what
 // this bucket representation supports directly (unlike, say, MAD, which

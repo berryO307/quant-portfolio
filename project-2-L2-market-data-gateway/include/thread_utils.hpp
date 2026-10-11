@@ -64,6 +64,54 @@ inline HotCores& hot_cores() {
     #include <unistd.h>
 #endif
 
+#include <chrono>
+
+// idle_sleep(): a short sleep that actually sleeps, for a cold-path thread
+// waiting for work.
+//
+// std::this_thread::sleep_for is NOT that on this Windows toolchain
+// (MinGW-w64 + winpthreads): it converts to whole milliseconds rounding
+// DOWN, so anything under 1ms returns immediately, and 1ms waits for the
+// next 15.6ms system timer tick. Measured with this compiler:
+//   sleep_for(100us) -> 0us     sleep_for(500us) -> 0us
+//   sleep_for(1ms)   -> p50 15.5ms, max 28.6ms
+// So a "sleep 500us when idle" loop was really a busy-spin. The export
+// drain thread did exactly that, at TIME_CRITICAL priority, 100% of a core,
+// forever -- and since each gateway only keeps its cold threads off its
+// OWN hot cores, the other instrument's process could land that spinning
+// thread on this one's consumer core. Two equal-priority threads that never
+// yield split a core one scheduler quantum at a time: the consumer lost its
+// core for ~32ms (2 x 15.625ms ticks), which is exactly the queue-latency
+// spike that was measured (13 samples at 32.07-32.15ms, none between 1ms
+// and 30ms).
+//
+// Windows: a high-resolution waitable timer (Windows 10 1803+) honours
+// sub-millisecond waits without changing the global timer resolution.
+// Elsewhere sleep_for already does what it says.
+#ifdef _WIN32
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+#endif
+inline void idle_sleep(std::chrono::microseconds d) {
+#ifdef _WIN32
+    // One timer per thread, created on first use, alive as long as the thread.
+    thread_local HANDLE timer =
+        CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    if (timer) {
+        LARGE_INTEGER due;
+        due.QuadPart = -static_cast<LONGLONG>(d.count()) * 10; // relative, in 100ns units
+        if (SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) {
+            WaitForSingleObject(timer, INFINITE);
+            return;
+        }
+    }
+    Sleep(1); // old Windows without high-resolution timers: a real (coarse) sleep beats a spin
+#else
+    std::this_thread::sleep_for(d);
+#endif
+}
+
 // pin_thread_self()
 // Called from INSIDE the thread that wants to be pinned.
 // Uses GetCurrentThread() on Windows — always returns a valid pseudo-handle

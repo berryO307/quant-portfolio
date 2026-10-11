@@ -154,12 +154,56 @@ export interface HelloMessage {
   symbol?: string;
 }
 
+// Stats as the relay actually sends them (see relay/src/types.ts's
+// StatsFullMessage for why): histograms carry only their non-empty bins,
+// the full latency history arrives once on connect (stats_full) and then
+// only the buckets that changed each tick (stats_update).
+// useRelayConnection rebuilds a StatsMessage from these, so nothing past it
+// sees the wire form.
+export interface WireHistogram {
+  count: number;
+  maxNs: number;
+  p50Ns: number;
+  p99Ns: number;
+  p999Ns: number;
+  bins: [number, number][];
+}
+
+export interface WireLatencyBucket {
+  timestampMs: number;
+  total: WireHistogram;
+  inFrame: WireHistogram;
+  parse: WireHistogram;
+  queue: WireHistogram;
+  bookUpdate: WireHistogram;
+  publish: WireHistogram;
+}
+
+export interface StatsFullMessage {
+  type: "stats_full";
+  binCount: number;
+  rollingWindow: WireHistogram;
+  currentSession: WireHistogram;
+  latencyBuckets: WireLatencyBucket[];
+}
+
+export interface StatsUpdateMessage {
+  type: "stats_update";
+  binCount: number;
+  rollingWindow: WireHistogram;
+  currentSession: WireHistogram;
+  latencyBuckets: WireLatencyBucket[];
+  oldestTimestampMs: number;
+}
+
 export type RelayMessage =
   | SampleRecord
   | SnapshotRecord
   | CoarseSnapshotRecord
   | TradeRecord
   | StatsMessage
+  | StatsFullMessage
+  | StatsUpdateMessage
   | HelloMessage;
 
 export function isRelayMessage(value: unknown): value is RelayMessage {
@@ -171,6 +215,8 @@ export function isRelayMessage(value: unknown): value is RelayMessage {
     t === "coarse_snapshot" ||
     t === "trade" ||
     t === "stats" ||
+    t === "stats_full" ||
+    t === "stats_update" ||
     t === "hello"
   );
 }
