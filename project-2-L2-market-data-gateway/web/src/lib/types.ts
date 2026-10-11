@@ -17,19 +17,19 @@ export type Side = "bid" | "ask" | "both" | "none";
 // reported an 8.7ms "book update" for what is really a 20ns operation
 // behind a queue wait.
 //
-// Previously also carried t_parse_begin (a per-tick marginal parse cost
-// within a batched frame), host_jitter_ns (ambient host scheduler noise
-// from a dedicated canary thread) and queue_depth (SPSC queue size at pop)
-// — removed as a deliberate project-scope decision: this gateway measures
-// its own hot-path work (parse/queue/book/publish), not the host machine's
-// scheduler behavior. See git history if any of the three is ever needed
-// again.
+// t_parse_begin restored 2026-09-29 — see relay/src/types.ts and
+// Engineering_Notes.md §11.6. Optional for the same reason t_pop is: an
+// older session/relay predating this field still parses, just without
+// being able to separate in-frame wait from marginal parse cost.
+// host_jitter_ns and queue_depth stay removed (Windows-diagnostic-only
+// scaffolding, not needed here).
 export interface SampleRecord {
   type: "sample";
   // See relay/src/types.ts's SampleRecord.symbol -- same optionality/
   // rationale, mirrored here verbatim.
   symbol?: string;
   t_recv: number;
+  t_parse_begin?: number;
   t_parse: number;
   t_pop?: number;
   t_book: number;
@@ -218,12 +218,17 @@ export interface TimedTrade extends TradeRecord {
 export interface LiveSample {
   tRecvTsc: number;
   latencyNs: number;
-  // t_recv -> t_parse. For tick k of a multi-tick frame (every tick in the
-  // frame shares t_recv) this is cumulative through this tick's position in
-  // the frame, not this tick's own marginal parse cost alone — a deliberate
-  // project-scope simplification (there used to be a separate "in-frame
-  // wait" stage isolating the marginal cost; removed as not worth the extra
-  // per-tick field for what this project is measuring).
+  // t_recv -> t_parse_begin. For tick k of a multi-tick frame (every tick
+  // in the frame shares t_recv), this is the time tick k spent sitting in
+  // an already-received frame behind its earlier siblings' parse work —
+  // zero for a single-tick frame (t_parse_begin falls back to t_recv when
+  // an older session/relay doesn't send it, which also yields zero, the
+  // same degrade-gracefully behavior t_pop's own fallback uses). See
+  // Engineering_Notes.md §11.6.
+  inFrameNs: number;
+  // t_parse_begin -> t_parse: THIS tick's own marginal parse cost, not
+  // cumulative through its batch position (inFrameNs above carries that
+  // part now).
   parseNs: number;
   queueNs: number; // gateway thread -> consumer thread handoff
   bookUpdateNs: number;
@@ -239,16 +244,19 @@ export interface LiveSample {
   queueOverflowDropped: number;
 }
 
-export type Attribution = "parse" | "queue" | "book-update" | "publish";
+export type Attribution = "in-frame-wait" | "parse" | "queue" | "book-update" | "publish";
 
 // Canonical shape both a loaded historical summary.json's tail_events and
 // client-side live tail detection produce, so TailEventsFeed/StageBreakdown
 // don't need to know which source they're rendering.
-// The four stages tile t_recv -> t_publish exactly: every nanosecond of a
+// The five stages tile t_recv -> t_publish exactly: every nanosecond of a
 // sample's latencyNs belongs to exactly one of them. Keep it that way — a
 // stage set that does not sum to the total makes the breakdown unreadable
-// against the chart above it.
+// against the chart above it. inFrame is 0 (not a candidate in practice)
+// for a single-tick frame or an older session/relay predating
+// t_parse_begin — see LiveSample's own comment.
 export interface StageNs {
+  inFrame: number;
   parse: number;
   queue: number;
   bookUpdate: number;
@@ -286,6 +294,9 @@ export function sampleKey(tRecvTsc: number, batchIndex: number): string {
 export interface LatencyBucketSnapshot {
     timestampMs: number;
     total: HistogramSnapshot;
+    // Restored 2026-09-29 alongside SampleRecord.t_parse_begin — see that
+    // field's own comment and Engineering_Notes.md §11.6.
+    inFrame: HistogramSnapshot;
     parse: HistogramSnapshot;
     queue: HistogramSnapshot;
     bookUpdate: HistogramSnapshot;

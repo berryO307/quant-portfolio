@@ -39,6 +39,7 @@ interface StageConfig {
 }
 
 const STAGES: readonly StageConfig[] = [
+  { key: "inFrame", label: "In-Frame Wait" },
   { key: "parse", label: "Parse Latency" },
   { key: "queue", label: "Queue Latency" },
   { key: "bookUpdate", label: "Book-Update Latency" },
@@ -46,11 +47,13 @@ const STAGES: readonly StageConfig[] = [
 ];
 
 // Same colour each stage already uses in Stage Breakdown, above this
-// section — parse/queue/bookUpdate/publish all read off chartTheme's own
-// dedicated tokens (see chartTheme.ts's comment on `publish` for why that
-// field exists — Task #8's black-rendering fix). No new colours.
+// section — parse/queue/bookUpdate/publish/inFrame all read off chartTheme's
+// own dedicated tokens (see chartTheme.ts's comment on `publish` for why
+// that field exists — Task #8's black-rendering fix). No new colours.
 function stageColor(theme: ChartTheme, stage: PipelineStageKey): string {
   switch (stage) {
+    case "inFrame":
+      return theme.inFrame;
     case "parse":
       return theme.parse;
     case "queue":

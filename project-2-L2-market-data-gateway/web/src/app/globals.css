@@ -90,6 +90,12 @@
   --parse: #2563eb;
   --queue: #0d9488;
   --book-update: #7c3aed;
+  /* Restored 2026-09-29 alongside t_parse_begin (Engineering_Notes.md
+     §11.6) — same dedicated-hex-token pattern as --publish below, and a
+     distinct hue from every other stage/status color already in this file
+     (parse=blue, queue=teal, book-update=violet, publish=indigo,
+     severe/brand-amber=brown, heat-warm/hot=yellow/orange). */
+  --in-frame: #c2410c;
   /* Task #8 fix: the Publish stage previously reused chartTheme.palette[3]
      (this file's --chart-4, below) for its ECharts line/heatmap colour.
      --chart-N are oklch() — fine for plain CSS (StageBreakdown's div-based
@@ -219,6 +225,7 @@
   --book-update: #bc8cff;
   /* Same reasoning as the light theme's own --publish comment above. */
   --publish: #818cf8;
+  --in-frame: #fb923c;
   --severe: #b19655;
   /* Same thermal ramp as the light theme's own block — brighter stops,
      same "reuse --ask for critical" reasoning. See that block's comment
@@ -307,6 +314,7 @@
   --color-queue: var(--queue);
   --color-book-update: var(--book-update);
   --color-publish: var(--publish);
+  --color-in-frame: var(--in-frame);
   --color-severe: var(--severe);
   --color-heat-cool: var(--heat-cool);
   --color-heat-warm: var(--heat-warm);

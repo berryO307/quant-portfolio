@@ -25,9 +25,16 @@ function percentile(sorted: number[], p: number): number {
 // Whichever stage ate the most time. "queue" joined the list once the
 // gateway started exporting its queue-pop stamp: before that, queue wait
 // was folded into bookUpdate and every queue-caused tail event was
-// mislabelled as a slow book update.
+// mislabelled as a slow book update. "in-frame-wait" rejoined for the same
+// reason (Engineering_Notes.md §11.6): without it as a candidate, a batched
+// tick's real dominant cost — time spent behind its earlier siblings in an
+// already-received frame — isn't visible to this function at all, so it
+// gets attributed to whichever OTHER stage happens to be biggest instead.
+// Measured live before the fix: 57.3% of dominant-stage attributions
+// changed once this candidate was added back.
 function dominantStage(stage: StageNs): Attribution {
   const ranked: [Attribution, number][] = [
+    ["in-frame-wait", stage.inFrame],
     ["parse", stage.parse],
     ["queue", stage.queue],
     ["book-update", stage.bookUpdate],
@@ -57,7 +64,7 @@ export function computeLiveTailEvents(samples: LiveSample[]): LiveTailResult {
       p50Ns: 0,
       p99Ns: 0,
       p999Ns: 0,
-      stageMedians: { parse: 0, queue: 0, bookUpdate: 0, publish: 0 },
+      stageMedians: { inFrame: 0, parse: 0, queue: 0, bookUpdate: 0, publish: 0 },
     };
   }
 
@@ -66,6 +73,7 @@ export function computeLiveTailEvents(samples: LiveSample[]): LiveTailResult {
   const p99Ns = percentile(sortedLatency, 99);
   const p999Ns = percentile(sortedLatency, 99.9);
   const stageMedians: StageNs = {
+    inFrame: median([...samples.map((s) => s.inFrameNs)].sort((a, b) => a - b)),
     parse: median([...samples.map((s) => s.parseNs)].sort((a, b) => a - b)),
     queue: median([...samples.map((s) => s.queueNs)].sort((a, b) => a - b)),
     bookUpdate: median([...samples.map((s) => s.bookUpdateNs)].sort((a, b) => a - b)),
@@ -99,6 +107,7 @@ export function computeLiveTailEvents(samples: LiveSample[]): LiveTailResult {
     if (seenKeys.has(key)) continue;
     seenKeys.add(key);
     const stage: StageNs = {
+      inFrame: s.inFrameNs,
       parse: s.parseNs,
       queue: s.queueNs,
       bookUpdate: s.bookUpdateNs,

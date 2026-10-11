@@ -14,13 +14,14 @@ export type Side = "bid" | "ask" | "both" | "none";
 // old, conflated stage: t_book - t_parse charges the book update for the
 // queue wait ahead of it.
 //
-// Previously also carried t_parse_begin (a per-tick marginal parse cost
-// within a batched frame), host_jitter_ns (ambient host scheduler noise
-// from a dedicated canary thread) and queue_depth (SPSC queue size at pop)
-// — removed as a deliberate project-scope decision, not because the wire
-// format changed accidentally: this gateway measures its own hot-path work,
-// not host scheduler behavior. See git history if any of the three is ever
-// needed again.
+// t_parse_begin restored 2026-09-29 — see include/export_pipeline.hpp's own
+// comment and Engineering_Notes.md §11.6. Optional here for the same reason
+// t_pop is: a session file or relay predating this field still parses, just
+// without being able to separate in-frame wait from parse — a consumer that
+// falls back to t_recv when it's absent gets the old, conflated "parse"
+// stage. host_jitter_ns and queue_depth stay removed (Windows-diagnostic-
+// only scaffolding, not needed here); only t_parse_begin was load-bearing
+// for correct stage attribution on any platform.
 export interface SampleRecord {
   type: "sample";
   // Optional for the same reason as t_pop/queue_overflow_dropped above -- a
@@ -36,6 +37,7 @@ export interface SampleRecord {
   // instead of trusting whichever connection happened to deliver it.
   symbol?: string;
   t_recv: number;
+  t_parse_begin?: number;
   t_parse: number;
   t_pop?: number;
   t_book: number;
@@ -45,9 +47,8 @@ export interface SampleRecord {
   // Cumulative count, sampled alongside this tick (a running total, not a
   // per-tick delta). Optional for the same reason as the other new fields:
   // a pre-existing session file captured before this counter existed
-  // replays through the same shape. Kept deliberately when
-  // t_parse_begin/host_jitter_ns/queue_depth were removed — this is
-  // data-completeness (did the order book miss a real tick), not latency.
+  // replays through the same shape. This is data-completeness (did the
+  // order book miss a real tick), not latency.
   queue_overflow_dropped?: number;
   side: Side;
   cpu_core: number;
@@ -157,6 +158,9 @@ export function isHelloMessage(value: unknown): value is HelloMessage {
 export interface LatencyBucketSnapshot {
   timestampMs: number;
   total: HistogramSnapshot;
+  // Restored 2026-09-29 alongside SampleRecord.t_parse_begin — see that
+  // field's own comment and Engineering_Notes.md §11.6.
+  inFrame: HistogramSnapshot;
   parse: HistogramSnapshot;
   queue: HistogramSnapshot;
   bookUpdate: HistogramSnapshot;
