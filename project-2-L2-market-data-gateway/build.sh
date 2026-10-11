@@ -16,7 +16,7 @@ DEFINES="
   -DBOOST_ATOMIC_NO_LIB -DBOOST_ATOMIC_STATIC_LINK
   -DBOOST_DATE_TIME_NO_LIB -DBOOST_DATE_TIME_STATIC_LINK
   -DBOOST_THREAD_NO_LIB -DBOOST_THREAD_STATIC_LINK -DBOOST_THREAD_USE_LIB
-  -DSIMDJSON_THREADS_ENABLED=1 -DSIMDJSON_USING_WINDOWS_DYNAMIC_LIBRARY=1
+  -DSIMDJSON_THREADS_ENABLED=1
   -D_WIN32_WINNT=0x0A00"
 INCS="-I$ROOT/include -IC:/msys64/mingw64/include"
 FLAGS="-O2 -std=gnu++20 -Wall -Wextra"
@@ -43,7 +43,7 @@ c++.exe -O2 \
   -Wl,--whole-archive "$BUILD/CMakeFiles/quant_day1.dir/objects.a" -Wl,--no-whole-archive \
   -o "$BUILD/quant_day1.exe" \
   "C:/msys64/mingw64/lib/libboost_thread-mt.a" \
-  C:/msys64/mingw64/lib/libsimdjson.dll.a \
+  C:/msys64/mingw64/lib/libsimdjson.a \
   C:/msys64/mingw64/lib/libssl.dll.a \
   C:/msys64/mingw64/lib/libcrypto.dll.a \
   C:/msys64/mingw64/lib/libz.dll.a \
