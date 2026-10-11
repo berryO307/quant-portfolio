@@ -6,6 +6,9 @@
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/websocket.hpp>
+#include <boost/asio/ssl.hpp>
+#include <boost/beast/ssl.hpp>
+#include <boost/beast/websocket/ssl.hpp>
 
 #include "relay_push_client.hpp"
 
@@ -13,15 +16,17 @@
 #include <functional>
 #include <iostream>
 #include <memory>
+#include <type_traits>
 
 namespace net       = boost::asio;
 namespace beast     = boost::beast;
 namespace websocket = beast::websocket;
+namespace ssl       = net::ssl;
 using     tcp       = net::ip::tcp;
 
-RelayPushClient::RelayPushClient(std::string host, std::string port, double cpu_ghz,
+RelayPushClient::RelayPushClient(std::string host, std::string port, bool tls, double cpu_ghz,
                                   std::optional<std::string> token, std::string symbol)
-    : host_(std::move(host)), port_(std::move(port)), cpu_ghz_(cpu_ghz),
+    : host_(std::move(host)), port_(std::move(port)), tls_(tls), cpu_ghz_(cpu_ghz),
       token_(std::move(token)), symbol_(std::move(symbol)), running_(true) {
     thread_ = std::thread([this]() { run(); });
 }
@@ -83,14 +88,68 @@ void RelayPushClient::run() {
 }
 
 void RelayPushClient::connect_and_send() {
+    if (tls_) session<true>();
+    else      session<false>();
+}
+
+// The stream type is the only difference between ws:// and wss://: TLS
+// inserts an ssl_stream layer between the TCP socket and the WebSocket.
+// Everything that follows talks to `ws` (WebSocket ops) or
+// get_lowest_layer(ws) (the TCP socket: timeouts, close), which both
+// stacks support identically, so one body serves both.
+template <bool Tls>
+void RelayPushClient::session() {
+    using Stream = std::conditional_t<Tls,
+        websocket::stream<beast::ssl_stream<beast::tcp_stream>>,
+        websocket::stream<beast::tcp_stream>>;
+
     net::io_context ioc;
-    websocket::stream<beast::tcp_stream> ws{ioc};
+
+    // Unused for plain ws. Built per connection attempt; those are seconds
+    // apart at the fastest (reconnect backoff), so the cost is irrelevant.
+    ssl::context ctx{ssl::context::tls_client};
+    if constexpr (Tls) {
+        // Two separate checks, and TLS is only worth having with both:
+        //  - verify_peer + the system CA store: the certificate chains to a
+        //    CA we trust (i.e. it's a real certificate, not a self-signed one
+        //    a man in the middle made up).
+        //  - host_name_verification: that certificate was issued for THIS
+        //    host. Without it, any valid certificate for ANY domain passes,
+        //    and an attacker with a cert for their own domain could still
+        //    sit in the middle and read the token from the hello.
+        ctx.set_verify_mode(ssl::verify_peer);
+        ctx.set_default_verify_paths();
+        ctx.set_verify_callback(ssl::host_name_verification(host_));
+        SSL_CTX_set_min_proto_version(ctx.native_handle(), TLS1_2_VERSION);
+    }
+
+    auto make_stream = [&]() -> Stream {
+        if constexpr (Tls) return Stream{ioc, ctx};
+        else               return Stream{ioc};
+    };
+    Stream ws = make_stream();
+
+    if constexpr (Tls) {
+        // SNI: the hostname sent in the clear at the start of the TLS
+        // handshake. A shared edge (Railway's) serves many apps on one IP
+        // and picks which certificate/app to answer with from this, so
+        // without it the handshake fails or reaches the wrong app.
+        if (!SSL_set_tlsext_host_name(ws.next_layer().native_handle(), host_.c_str()))
+            throw std::runtime_error("SSL_set_tlsext_host_name failed");
+    }
 
     tcp::resolver resolver{ioc};
     auto results = resolver.resolve(host_, port_);
 
     beast::get_lowest_layer(ws).expires_after(std::chrono::seconds(10));
     beast::get_lowest_layer(ws).connect(results);
+
+    if constexpr (Tls) {
+        // Certificate checks above run here; a failure throws, and run()
+        // logs it and retries with backoff like any other connect error.
+        beast::get_lowest_layer(ws).expires_after(std::chrono::seconds(10));
+        ws.next_layer().handshake(ssl::stream_base::client);
+    }
 
     ws.set_option(websocket::stream_base::decorator(
         [](websocket::request_type& req) {
@@ -135,7 +194,7 @@ void RelayPushClient::connect_and_send() {
     // not a synchronous call blocking indefinitely without one.
     beast::get_lowest_layer(ws).expires_never();
 
-    std::cout << "[relay-push] connected to ws://" << host_ << ":" << port_ << "/ingest\n";
+    std::cout << "[relay-push] connected to " << (Tls ? "wss://" : "ws://") << host_ << ":" << port_ << "/ingest\n";
 
     // The relay pings this connection every 15s and terminates it after
     // ~45s without a pong (bybitIngestClient.ts's startHeartbeat()) -- real

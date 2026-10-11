@@ -78,6 +78,9 @@ void HyperliquidAdapter::connect_and_read() {
     ssl::context ctx{ssl::context::tlsv13_client};
     ctx.set_verify_mode(ssl::verify_peer);
     ctx.set_default_verify_paths();
+    // verify_peer alone only proves the certificate chains to a trusted CA,
+    // not that it was issued for WS_HOST. See relay_push_client.cpp.
+    ctx.set_verify_callback(ssl::host_name_verification(WS_HOST));
 
     websocket::stream<beast::ssl_stream<beast::tcp_stream>> ws{ioc, ctx};
 

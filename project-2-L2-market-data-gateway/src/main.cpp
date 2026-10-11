@@ -806,18 +806,22 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // Accepts a bare "host:port" or "ws://host:port[/path]" (scheme and any
+    // Accepts a bare "host:port" or "ws[s]://host[:port][/path]" (any
     // trailing path stripped) so pasting the same address style this project
-    // already uses elsewhere for relay URLs just works.
-    auto parse_relay_url = [](const std::string& url) -> std::pair<std::string, std::string> {
+    // already uses elsewhere for relay URLs just works. "wss://" turns on TLS
+    // and defaults the port to 443 -- the shape of a hosted relay behind an
+    // HTTPS edge, e.g. wss://<app>.up.railway.app.
+    struct RelayTarget { std::string host, port; bool tls; };
+    auto parse_relay_url = [](const std::string& url) -> RelayTarget {
         std::string s = url;
+        bool tls = s.rfind("wss://", 0) == 0;
         auto scheme_pos = s.find("://");
         if (scheme_pos != std::string::npos) s = s.substr(scheme_pos + 3);
         auto slash_pos = s.find('/');
         if (slash_pos != std::string::npos) s = s.substr(0, slash_pos);
         auto colon_pos = s.rfind(':');
-        if (colon_pos == std::string::npos) return {s, "8080"};
-        return {s.substr(0, colon_pos), s.substr(colon_pos + 1)};
+        if (colon_pos == std::string::npos) return {s, tls ? "443" : "8080", tls};
+        return {s.substr(0, colon_pos), s.substr(colon_pos + 1), tls};
     };
 
     const char* env_relay_host = std::getenv("RELAY_WS_HOST");
@@ -827,11 +831,16 @@ int main(int argc, char* argv[]) {
     std::unique_ptr<RelayPushClient> relay_push;
     if (relay_configured) {
         std::string relay_host, relay_port;
+        bool relay_tls = false;
         if (!relay_url_flag.empty()) {
-            std::tie(relay_host, relay_port) = parse_relay_url(relay_url_flag);
+            auto t = parse_relay_url(relay_url_flag);
+            relay_host = t.host;
+            relay_port = t.port;
+            relay_tls  = t.tls;
         } else {
+            relay_tls  = env_or("RELAY_WS_TLS", "0") == "1";
             relay_host = env_or("RELAY_WS_HOST", "localhost");
-            relay_port = env_or("RELAY_WS_PORT", "8080");
+            relay_port = env_or("RELAY_WS_PORT", relay_tls ? "443" : "8080");
         }
 
         std::optional<std::string> relay_token;
@@ -844,11 +853,12 @@ int main(int argc, char* argv[]) {
         // this codebase already follow. A stack-local version of this crashed
         // with STATUS_STACK_OVERFLOW immediately on startup — confirmed, not
         // theoretical.
-        relay_push = std::make_unique<RelayPushClient>(relay_host, relay_port, host_ghz, relay_token, symbol);
-        std::cout << "[main] relay push -> ws://" << relay_host << ":" << relay_port << "/ingest\n";
+        relay_push = std::make_unique<RelayPushClient>(relay_host, relay_port, relay_tls, host_ghz, relay_token, symbol);
+        std::cout << "[main] relay push -> " << (relay_tls ? "wss://" : "ws://") << relay_host << ":" << relay_port
+                  << "/ingest" << (relay_token ? " (token set)" : " (no token)") << "\n";
     } else {
         std::cout << "[main] relay push disabled (no --relay-url/--relay-token or "
-                     "RELAY_WS_HOST/RELAY_WS_PORT/INGEST_TOKEN set)\n";
+                     "RELAY_WS_HOST/RELAY_WS_PORT/RELAY_WS_TLS/INGEST_TOKEN set)\n";
     }
 
     ColdPathExporter exporter(*export_ring, host_ghz, live_histogram, "data/export",
