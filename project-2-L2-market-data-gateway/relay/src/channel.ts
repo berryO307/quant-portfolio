@@ -51,6 +51,9 @@ export class Channel {
   addViewer(ws: WebSocket): void {
     ws.send(this.helloPayload());
     for (const payload of this.broadcaster.latestSnapshotPayloads()) ws.send(payload);
+    // The retained latency history, once. From here on the viewer only
+    // gets stats_update deltas (see the stats timer in server.ts).
+    ws.send(JSON.stringify(this.stats.fullMessage()));
   }
 
   summary() {
@@ -60,6 +63,10 @@ export class Channel {
       isReplay: this.source.isReplay(),
       capturedAt: this.source.capturedAt(),
       viewers: this.clients.size,
+      // Messages not sent to a viewer because its connection was backed up
+      // (ConnectionManager's slow-client guard). Should stay at or near 0;
+      // a climbing number means viewers are missing trades and books.
+      droppedToSlowViewers: this.clients.droppedMessageCount,
     };
   }
 }

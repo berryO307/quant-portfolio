@@ -102,8 +102,8 @@ test("a new viewer gets the channel's cached snapshot immediately", async () => 
     await new Promise((r) => setTimeout(r, 50));
 
     const viewer = open(viewerUrl(base, "BTC"));
-    await waitFor(() => viewer.messages.length >= 2, "hello + snapshot");
-    assert.deepEqual(viewer.messages.map((m) => m.type), ["hello", "snapshot"]);
+    await waitFor(() => viewer.messages.length >= 3, "hello + snapshot + stats_full");
+    assert.deepEqual(viewer.messages.slice(0, 2).map((m) => m.type), ["hello", "snapshot"]);
   } finally {
     await relay.close();
   }
@@ -208,6 +208,52 @@ test("CORS allowlist echoes a listed origin and omits the header for others", as
     assert.equal(allowed.headers.get("vary"), "Origin");
     const denied = await get("https://evil.example");
     assert.equal(denied.headers.get("access-control-allow-origin"), null);
+  } finally {
+    await relay.close();
+  }
+});
+
+test("stats: full history once on connect, then only changed buckets, sparse", async () => {
+  const { relay, base } = await startRelay({ statsIntervalMs: 100 });
+  try {
+    const src = await feed(base, relay, "BTC");
+    const sample = (i: number) => ({
+      type: "sample", t_recv: 1_000 + i, t_parse_begin: 1_000 + i, t_parse: 4_000 + i,
+      t_pop: 5_000 + i, t_book: 6_000 + i, t_publish: 7_000 + i, batch_index: 0, batch_size: 1,
+    });
+    for (let i = 0; i < 5; i++) src.ws.send(JSON.stringify(sample(i)));
+    // All five recorded, then the pending change set consumed, so nothing is
+    // owed to the viewer below beyond its stats_full.
+    const stats = relay.registry.get("BTC")!.stats;
+    await waitFor(() => stats.snapshot().currentSession.count === 5, "samples recorded");
+    stats.takeUpdate();
+
+    const viewer = open(viewerUrl(base, "BTC"));
+    await waitFor(() => viewer.messages.some((m) => m.type === "stats_full"), "stats_full");
+    const full = viewer.messages.find((m) => m.type === "stats_full") as {
+      binCount: number; latencyBuckets: { total: { count: number; bins: [number, number][] } }[];
+    };
+    assert.ok(full.binCount > 1000);
+    assert.equal(full.latencyBuckets.length, 1);
+    assert.equal(full.latencyBuckets[0]!.total.count, 5);
+    // Sparse: 5 identical samples land in one bin, not a 1,854-entry array.
+    assert.deepEqual(full.latencyBuckets[0]!.total.bins.length, 1);
+    assert.ok(!("counts" in full.latencyBuckets[0]!.total));
+
+    // Idle: no samples, so no stats at all (old behaviour: the whole history
+    // again every tick).
+    await new Promise((r) => setTimeout(r, 350));
+    const settled = viewer.messages.filter((m) => m.type === "stats_update").length;
+    assert.equal(settled, 0, "idle relay sends no stats");
+    // A new sample: one update carrying only the changed bucket.
+    src.ws.send(JSON.stringify(sample(9)));
+    await waitFor(() => viewer.messages.filter((m) => m.type === "stats_update").length > settled, "stats_update");
+    const update = viewer.messages.filter((m) => m.type === "stats_update").at(-1) as {
+      latencyBuckets: { total: { count: number } }[];
+    };
+    assert.equal(update.latencyBuckets.length, 1);
+    assert.equal(update.latencyBuckets[0]!.total.count, 6);
+    assert.ok(viewer.messages.every((m) => m.type !== "stats"), "the old full-every-tick message is gone");
   } finally {
     await relay.close();
   }

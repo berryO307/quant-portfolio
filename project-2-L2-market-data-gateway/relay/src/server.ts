@@ -98,7 +98,7 @@ export function createRelay(config: RelayConfig): Relay {
           });
           return;
         }
-        sendJson(res, 200, channel.stats.snapshot());
+        sendJson(res, 200, channel.stats.fullMessage()); // sparse, same as a viewer's stats_full
         return;
       }
 
@@ -207,10 +207,20 @@ export function createRelay(config: RelayConfig): Relay {
   // Stats only for instruments someone is watching: building a snapshot
   // merges every retained histogram bucket, so with many instruments and
   // few viewers, skipping idle channels is most of the per-tick cost saved.
+  //
+  // Only what changed since the last tick (normally the one current 10s
+  // bucket), sparse-encoded. This used to re-send the whole retained hour
+  // every tick: 8.2MB per viewer per second, which overflowed every
+  // viewer's connection and made the relay drop their trades and books.
+  // A viewer gets the full history once, on connect (Channel.addViewer).
   const statsTimer = setInterval(() => {
     for (const channel of registry.all()) {
-      if (channel.clients.size === 0) continue;
-      channel.clients.broadcast(JSON.stringify({ type: "stats", ...channel.stats.snapshot() }));
+      if (channel.clients.size === 0) {
+        channel.stats.clearUpdate();
+        continue;
+      }
+      const update = channel.stats.takeUpdate();
+      if (update) channel.clients.broadcast(JSON.stringify(update));
     }
   }, config.statsIntervalMs);
 

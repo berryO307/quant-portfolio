@@ -173,3 +173,58 @@ export interface StatsMessage {
   currentSession: HistogramSnapshot;
   latencyBuckets: LatencyBucketSnapshot[];
 }
+
+// ---- Stats on the wire to viewers ------------------------------------------
+//
+// Sending StatsMessage itself every second was the relay's biggest bug: it
+// carries the whole retained hour (360 buckets x 6 stages), each histogram as
+// a dense 1,854-bin `counts` array that is almost all zeros -- 8.2MB per
+// message, per viewer, per second. Far more than a viewer's connection can
+// drain, so ConnectionManager's slow-client guard started dropping that
+// viewer's trades and snapshots, and every message queued behind megabytes
+// of stats. Two changes fix it:
+//   - sparse histograms: only non-empty bins, as [binIndex, count] pairs;
+//   - history once: a viewer gets stats_full when it connects, then each
+//     tick only the buckets that changed (stats_update, normally one).
+
+/** HistogramSnapshot with `counts` replaced by its non-empty bins. */
+export interface WireHistogram {
+  count: number;
+  maxNs: number;
+  p50Ns: number;
+  p99Ns: number;
+  p999Ns: number;
+  /** [binIndex, count] for every bin with count > 0, ascending by index. */
+  bins: [number, number][];
+}
+
+export interface WireLatencyBucket {
+  timestampMs: number;
+  total: WireHistogram;
+  inFrame: WireHistogram;
+  parse: WireHistogram;
+  queue: WireHistogram;
+  bookUpdate: WireHistogram;
+  publish: WireHistogram;
+}
+
+/** Sent once, to a viewer that just connected: everything retained. */
+export interface StatsFullMessage {
+  type: "stats_full";
+  /** Histogram bin count, so the client can rebuild dense counts. */
+  binCount: number;
+  rollingWindow: WireHistogram;
+  currentSession: WireHistogram;
+  latencyBuckets: WireLatencyBucket[];
+}
+
+/** Sent every stats tick: only buckets that changed since the last one. */
+export interface StatsUpdateMessage {
+  type: "stats_update";
+  binCount: number;
+  rollingWindow: WireHistogram;
+  currentSession: WireHistogram;
+  latencyBuckets: WireLatencyBucket[];
+  /** Buckets older than this were evicted; the client drops them too. */
+  oldestTimestampMs: number;
+}

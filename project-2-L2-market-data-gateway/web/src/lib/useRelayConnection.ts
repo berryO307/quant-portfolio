@@ -4,11 +4,36 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   isRelayMessage,
   type CoarseSnapshotRecord,
+  type HistogramSnapshot,
+  type LatencyBucketSnapshot,
   type LiveSample,
   type SnapshotRecord,
   type StatsMessage,
   type TimedTrade,
+  type WireHistogram,
+  type WireLatencyBucket,
 } from "./types";
+
+// The relay sends histograms sparse (non-empty bins only); the charts work
+// on dense counts, so each one is expanded on arrival. Cheap: the full
+// history arrives once per connection, then a handful of buckets a second.
+function fromWire(h: WireHistogram, binCount: number): HistogramSnapshot {
+  const counts = new Array<number>(binCount).fill(0);
+  for (const [i, c] of h.bins) counts[i] = c;
+  return { count: h.count, maxNs: h.maxNs, p50Ns: h.p50Ns, p99Ns: h.p99Ns, p999Ns: h.p999Ns, counts };
+}
+
+function bucketFromWire(b: WireLatencyBucket, binCount: number): LatencyBucketSnapshot {
+  return {
+    timestampMs: b.timestampMs,
+    total: fromWire(b.total, binCount),
+    inFrame: fromWire(b.inFrame, binCount),
+    parse: fromWire(b.parse, binCount),
+    queue: fromWire(b.queue, binCount),
+    bookUpdate: fromWire(b.bookUpdate, binCount),
+    publish: fromWire(b.publish, binCount),
+  };
+}
 
 // Same reconnect backoff used everywhere else in this project (ws_client.hpp
 // for the gateway's Bybit feed, and the documented contract for a future
@@ -131,6 +156,9 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
   const cpuGhzRef = useRef(DEFAULT_CPU_GHZ);
   // Identity of the upstream the last hello described (see the hello case).
   const sourceKeyRef = useRef<string | null>(null);
+  // Latency history by bucket timestamp, built from this connection's
+  // stats_full and kept current by stats_update. null until stats_full.
+  const statsBucketsRef = useRef<Map<number, LatencyBucketSnapshot> | null>(null);
   // Read inside the onmessage closure the same way cpuGhzRef is -- avoids
   // recreating connect() (and therefore the WebSocket) on every render just
   // because the caller passed a fresh string with the same value.
@@ -195,6 +223,7 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
   const connect = useCallback(() => {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
+    statsBucketsRef.current = null; // each connection starts with its own stats_full
 
     // Every handler below checks "is this still the current connection"
     // before acting, rather than a shared mounted/cancelled boolean. That
@@ -256,9 +285,34 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
         case "trade":
           setTrades((prev) => [{ ...parsed, receivedAtMs: Date.now() }, ...prev].slice(0, MAX_TRADES));
           break;
-        case "stats":
+        case "stats": // a relay older than stats_full/stats_update
           setStats(parsed);
           break;
+        case "stats_full": {
+          const buckets = new Map<number, LatencyBucketSnapshot>();
+          for (const b of parsed.latencyBuckets) buckets.set(b.timestampMs, bucketFromWire(b, parsed.binCount));
+          statsBucketsRef.current = buckets;
+          setStats({
+            type: "stats",
+            rollingWindow: fromWire(parsed.rollingWindow, parsed.binCount),
+            currentSession: fromWire(parsed.currentSession, parsed.binCount),
+            latencyBuckets: [...buckets.values()],
+          });
+          break;
+        }
+        case "stats_update": {
+          const buckets = statsBucketsRef.current;
+          if (!buckets) break; // no history yet: this connection's stats_full comes first
+          for (const b of parsed.latencyBuckets) buckets.set(b.timestampMs, bucketFromWire(b, parsed.binCount));
+          for (const ts of buckets.keys()) if (ts < parsed.oldestTimestampMs) buckets.delete(ts);
+          setStats({
+            type: "stats",
+            rollingWindow: fromWire(parsed.rollingWindow, parsed.binCount),
+            currentSession: fromWire(parsed.currentSession, parsed.binCount),
+            latencyBuckets: [...buckets.values()].sort((a, b) => a.timestampMs - b.timestampMs),
+          });
+          break;
+        }
         case "sample": {
           const ghz = cpuGhzRef.current;
           // Each stage is the gap between two adjacent stamps. t_pop falls
