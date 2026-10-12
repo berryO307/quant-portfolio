@@ -59,7 +59,7 @@ export class Channel {
     }
     // The retained latency history, once. From here on the viewer only
     // gets stats_update deltas (see the stats timer in server.ts).
-    this.clients.send(ws, JSON.stringify(this.stats.fullMessage()));
+    this.clients.send(ws, this.stats.fullMessageJson());
   }
 
   summary() {
