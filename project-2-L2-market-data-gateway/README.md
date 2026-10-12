@@ -152,6 +152,16 @@ Load test against a local build of the relay (both instruments replaying, viewer
 | 300 | 0 | 5.6 / 9.8 ms | 0.099 vCPU | 97 MB |
 | 500 | 0 | 9.9 / 27.8 ms | 0.154 vCPU | 138 MB |
 
+This needed one fix first. Every connecting viewer is sent the retained latency history, and the relay used to rebuild that history from dense histograms on each connection, on Node's single thread:
+
+| Full hour of history, two instruments | Before | After |
+| --- | ---: | ---: |
+| Preparing one new viewer's history | 141.6 ms | 0.3 ms |
+| 300 viewers connecting back to back | ~42 s with no data sent to anyone | 77 ms |
+| Memory held for the history | 61.1 MB | ~2.7 MB |
+
+A finished 10-second bucket can never change, so it is now serialized once and its arrays are freed; only the current bucket keeps full histograms, and a connecting viewer's history is assembled from the cached pieces.
+
 The test client ran on the same machine and read all sockets from one process, so the spreads include its own delay. CPU and memory grow linearly, at about 0.03 vCPU and 15 MB per 100 viewers. The relay accepts 500 concurrent viewers by default (`MAX_CLIENTS`).
 
 At that scale the binding constraint is money, not capacity: 500 viewers watching all day is ~24 GB/day, about $1.19/day in egress. `EGRESS_BUDGET_MB_PER_DAY` (default 1024) caps it. The relay counts the bytes actually written to viewer sockets, after compression, once a second. When the day's budget is spent it disconnects viewers with close code 1013 and refuses new ones until 00:00 UTC. Raise the budget deliberately if you expect a traffic spike.
