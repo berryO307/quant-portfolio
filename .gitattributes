@@ -1,3 +1,6 @@
 # Tell GitHub Linguist to exclude notebooks from the language bar
 project-2-L2-market-data-gateway/analysis/notebooks/*.ipynb linguist-documentation=true
 project-1-microgrid-mdp/**/*.ipynb linguist-documentation=true
+
+# Shell scripts always check out with LF: bash on Linux fails on CRLF.
+*.sh text eol=lf
