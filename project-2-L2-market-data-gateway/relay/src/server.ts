@@ -1,6 +1,7 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ChannelRegistry } from "./channel.js";
+import { BUDGET_CLOSE_CODE, BUDGET_CLOSE_REASON, EgressBudget } from "./egressBudget.js";
 import { isHelloMessage } from "./types.js";
 
 export interface RelayConfig {
@@ -18,6 +19,9 @@ export interface RelayConfig {
   statsIntervalMs: number;
   /** An ingest socket that hasn't sent its hello by then is dropped. */
   helloTimeoutMs: number;
+  /** Hard cap on bytes sent to viewers per UTC day (see EgressBudget).
+   * 0 or omitted = no cap. */
+  egressBudgetMBPerDay?: number;
 }
 
 export interface Relay {
@@ -30,10 +34,6 @@ export interface Relay {
 // Bounded so a symbol can't be used to stuff arbitrary data into the Map.
 export const SYMBOL_PATTERN = /^[A-Za-z0-9:_.-]{1,32}$/;
 
-function sendJson(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { "Content-Type": "application/json" });
-  res.end(JSON.stringify(body));
-}
 
 // One relay process, many instruments.
 //
@@ -44,7 +44,19 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 //   - a BROWSER names the instrument it wants in the query string:
 //     /live?symbol=BTC, /health?symbol=BTC, /stats?symbol=BTC.
 export function createRelay(config: RelayConfig): Relay {
-  const registry = new ChannelRegistry(config.maxClients, config.maxChannels);
+  const budget = new EgressBudget(Math.max(0, config.egressBudgetMBPerDay ?? 0) * 1_048_576);
+  const registry = new ChannelRegistry(config.maxClients, config.maxChannels, budget);
+
+  // HTTP bodies are egress too. Recorded, never refused here: health
+  // responses are a few hundred bytes and the dashboard needs them to say
+  // WHY it has no data. /stats, the one large body, checks the budget
+  // itself below.
+  function sendJson(res: ServerResponse, status: number, body: unknown): void {
+    const text = JSON.stringify(body);
+    budget.record(Buffer.byteLength(text));
+    res.writeHead(status, { "Content-Type": "application/json" });
+    res.end(text);
+  }
   for (const symbol of config.symbols) registry.getOrCreate(symbol);
 
   const server = createServer((req, res) => {
@@ -77,6 +89,7 @@ export function createRelay(config: RelayConfig): Relay {
           sendJson(res, ok ? 200 : 503, {
             status: ok ? "ok" : "degraded",
             channels: Object.fromEntries(channels.map((c) => [c.symbol, c.source.isConnected()])),
+            egress: budget.summary(),
           });
           return;
         }
@@ -96,6 +109,10 @@ export function createRelay(config: RelayConfig): Relay {
             error: symbol === null ? "symbol query parameter required" : "unknown symbol",
             symbols: registry.all().map((c) => c.symbol),
           });
+          return;
+        }
+        if (budget.exhausted()) {
+          sendJson(res, 503, { error: BUDGET_CLOSE_REASON, egress: budget.summary() });
           return;
         }
         sendJson(res, 200, channel.stats.fullMessage()); // sparse, same as a viewer's stats_full
@@ -190,6 +207,10 @@ export function createRelay(config: RelayConfig): Relay {
         // upgrade would only show a generic failure.
         if (!channel) {
           ws.close(1008, symbol === null ? "symbol query parameter required" : "unknown symbol");
+          return;
+        }
+        if (budget.exhausted()) {
+          ws.close(BUDGET_CLOSE_CODE, BUDGET_CLOSE_REASON);
           return;
         }
         if (registry.totalViewers() >= config.maxClients || !channel.clients.addClient(ws)) {

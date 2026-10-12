@@ -38,6 +38,10 @@ The fake gateway is for UI and relay development; it is not an exchange feed. To
 
 Use `INGEST_TOKEN` to protect `/ingest`; set the same value for the gateway or replay sender. Set `CORS_ORIGIN` to the Vercel dashboard origin. Keep `DATABASE_URL` and `INGEST_TOKEN` in the provider's secret settings, not in Git. The browser only needs the public relay base URL through `NEXT_PUBLIC_RELAY_URL` in the web app.
 
+`EGRESS_BUDGET_MB_PER_DAY` (default `1024`) caps what the relay sends to viewers per UTC day. Railway bills egress at $0.05/GB, so the default bounds egress at about $0.05 a day whatever goes wrong; once it is spent, viewers are disconnected with close code 1013 and refused until the next UTC day. `GET /health` reports `egress.sentTodayMB` against `egress.budgetMB`. A viewer normally costs about 8 KB/s (BTC) or 3 KB/s (WTI), so the default covers roughly 35 viewer-hours a day. Set `0` only on unmetered hosting. Frame and TLS overhead are not counted, so the bill can run a few percent above the cap.
+
+Measured idle cost of the Railway service (relay plus two replay workers, nobody connected): about 320 MB of RAM and 0.002 vCPU, roughly $3.20 a month at Railway's $10/GB-month RAM price, inside the Hobby plan's included $5.
+
 ## Neon tick storage
 
 [`scripts/schema.sql`](scripts/schema.sql) creates `sessions` and `ticks`. The migration script imports a gateway export while preserving the original record order. `replay-gateway-neon.mjs` loads one session for a symbol from Neon at startup and streams it to `/ingest` at the capture's pace. The replay then runs from memory; Neon is not queried for every tick.

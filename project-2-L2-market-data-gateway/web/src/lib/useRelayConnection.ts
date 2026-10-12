@@ -45,6 +45,40 @@ const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_MULT = 2;
 
 const HEALTH_POLL_MS = 5_000;
+
+// A tab that has been in the background this long stops streaming until
+// it's visible again. The relay is billed for every byte it sends, and a
+// dashboard tab left open overnight was most of a $15 hosting bill (at the
+// time each viewer cost ~8MB/s; it's ~8KB/s now, but nobody watching a
+// hidden tab is still nobody watching). Long enough that switching tabs
+// briefly never interrupts the stream.
+const HIDDEN_PAUSE_MS = 60_000;
+
+// false once the tab has been hidden for HIDDEN_PAUSE_MS, true again the
+// moment it's visible. Starts true: a tab opened in the foreground streams
+// immediately, and one opened in the background gets the same grace period.
+function useTabActive(): boolean {
+  const [active, setActive] = useState(true);
+  useEffect(() => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const armIfHidden = () => {
+      if (document.visibilityState === "hidden") timer = setTimeout(() => setActive(false), HIDDEN_PAUSE_MS);
+    };
+    const onVisibilityChange = () => {
+      if (timer) clearTimeout(timer);
+      timer = null;
+      if (document.visibilityState === "visible") setActive(true);
+      else armIfHidden();
+    };
+    armIfHidden();
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+  return active;
+}
 // How long to sit on "connected, healthy, but no order book snapshot yet"
 // before treating it as worth telling the user about, rather than an
 // indefinite silent wait. A live gateway's own l2Book cadence is a few
@@ -362,14 +396,21 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
     connectRef.current = connect;
   }, [connect]);
 
+  // Background tabs don't stream (see useTabActive): going inactive runs
+  // this effect's cleanup, which closes the socket without scheduling a
+  // reconnect; coming back runs connect() again, and the relay re-sends
+  // hello, the latest book and the stats history on connect.
+  const tabActive = useTabActive();
+
   useEffect(() => {
+    if (!tabActive) return;
     connect();
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
       wsRef.current?.close();
       wsRef.current = null; // makes any in-flight handler for the old socket see itself as superseded
     };
-  }, [connect]);
+  }, [connect, tabActive]);
 
   useEffect(() => {
     let rafId: number;
@@ -391,6 +432,7 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
   }, []);
 
   useEffect(() => {
+    if (!tabActive) return; // same reason as the socket above: nobody is looking
     let cancelled = false;
 
     const poll = async () => {
@@ -409,7 +451,7 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
       cancelled = true;
       clearInterval(interval);
     };
-  }, [healthUrl]);
+  }, [healthUrl, tabActive]);
 
   // Starts (or clears) the moment any of its own inputs change -- healthy
   // with a snapshot already in hand, or not healthy at all, both clear it

@@ -4,6 +4,7 @@ import { ConnectionManager } from "./connectionManager.js";
 import { Broadcaster } from "./broadcaster.js";
 import { RollingStatsAggregator } from "./rollingStatsAggregator.js";
 import { HealthMonitor } from "./healthMonitor.js";
+import type { EgressBudget } from "./egressBudget.js";
 
 // Everything the relay keeps for ONE instrument: its upstream connection,
 // its browser clients, its snapshot cache and its latency stats. Before
@@ -22,8 +23,8 @@ export class Channel {
   readonly stats: RollingStatsAggregator;
   readonly health: HealthMonitor;
 
-  constructor(readonly symbol: string, maxClients: number) {
-    this.clients = new ConnectionManager(maxClients);
+  constructor(readonly symbol: string, maxClients: number, budget?: EgressBudget) {
+    this.clients = new ConnectionManager(maxClients, budget);
     this.broadcaster = new Broadcaster(this.source, this.clients);
     this.stats = new RollingStatsAggregator(this.source);
     this.health = new HealthMonitor(this.source);
@@ -49,11 +50,16 @@ export class Channel {
   // upstream's next ones -- for a replay that wait is unbounded (see
   // Broadcaster's comment).
   addViewer(ws: WebSocket): void {
-    ws.send(this.helloPayload());
-    for (const payload of this.broadcaster.latestSnapshotPayloads()) ws.send(payload);
+    // Through clients.send, not ws.send: these count against the egress
+    // budget like everything else (stats_full is the largest single
+    // message a viewer gets).
+    if (!this.clients.send(ws, this.helloPayload())) return;
+    for (const payload of this.broadcaster.latestSnapshotPayloads()) {
+      if (!this.clients.send(ws, payload)) return;
+    }
     // The retained latency history, once. From here on the viewer only
     // gets stats_update deltas (see the stats timer in server.ts).
-    ws.send(JSON.stringify(this.stats.fullMessage()));
+    this.clients.send(ws, JSON.stringify(this.stats.fullMessage()));
   }
 
   summary() {
@@ -83,7 +89,8 @@ export class ChannelRegistry {
 
   constructor(
     private readonly maxClients: number,
-    private readonly maxChannels: number
+    private readonly maxChannels: number,
+    private readonly budget?: EgressBudget
   ) {}
 
   get(symbol: string): Channel | undefined {
@@ -95,7 +102,7 @@ export class ChannelRegistry {
     const existing = this.channels.get(symbol);
     if (existing) return existing;
     if (this.channels.size >= this.maxChannels) return undefined;
-    const channel = new Channel(symbol, this.maxClients);
+    const channel = new Channel(symbol, this.maxClients, this.budget);
     this.channels.set(symbol, channel);
     return channel;
   }
