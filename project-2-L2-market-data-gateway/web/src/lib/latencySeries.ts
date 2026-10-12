@@ -124,7 +124,6 @@ function snapshotFromCounts(
  */
 export type LatencyStageKey =
   | "total"
-  | "inFrame"
   | "parse"
   | "queue"
   | "bookUpdate"

@@ -11,6 +11,11 @@ const SLOW_CLIENT_BUFFERED_BYTES = 1 << 20; // 1MB
 // give up on it outright rather than holding the memory indefinitely.
 const STUCK_CLIENT_BUFFERED_BYTES = 8 << 20; // 8MB
 
+/** The part of a viewer's TCP socket used for egress accounting. */
+export interface CountedSocket {
+  readonly bytesWritten: number;
+}
+
 // Tracks connected browser clients, enforces a concurrent-connection cap,
 // and — the important part — never lets a slow client's backlog block the
 // broadcast loop. ws.send() is already async and won't block Node's event
@@ -20,9 +25,19 @@ const STUCK_CLIENT_BUFFERED_BYTES = 8 << 20; // 8MB
 // this message dropped (it'll catch up on the next one that fits), and a
 // truly stuck client gets disconnected. Same "drop and count, never block
 // the fast path" principle as the C++ side's SPSC ring buffers.
+//
+// Egress is measured from each viewer's socket (bytesWritten: what actually
+// left, after permessage-deflate and with frame headers), not from message
+// sizes -- compressed traffic is ~4x smaller than the JSON, so counting the
+// JSON made the daily budget run out 4x early. Collected once a second by
+// the relay (takeEgressBytes), so the budget can overshoot by at most one
+// second of traffic.
 export class ConnectionManager {
   private clients = new Set<WebSocket>();
   private droppedMessages = 0;
+  private sockets = new Map<WebSocket, { socket: CountedSocket; counted: number }>();
+  // Bytes written by viewers that disconnected since the last collection.
+  private closedUncounted = 0;
 
   constructor(
     private readonly maxClients: number = DEFAULT_MAX_CLIENTS,
@@ -30,10 +45,10 @@ export class ConnectionManager {
     private readonly budget?: EgressBudget
   ) {}
 
-  /** Sends to one viewer, counted against the egress budget. Returns false
-   * (and has disconnected every viewer) once today's budget is spent. */
+  /** Sends to one viewer. Returns false (and has disconnected every viewer)
+   * once today's egress budget is spent. */
   send(ws: WebSocket, data: string): boolean {
-    if (this.budget && !this.budget.trySpend(Buffer.byteLength(data))) {
+    if (this.budget?.exhausted()) {
       this.closeAllForBudget();
       return false;
     }
@@ -56,18 +71,43 @@ export class ConnectionManager {
     return this.droppedMessages;
   }
 
-  /** Returns false (and the caller should close the socket) if at capacity. */
-  addClient(ws: WebSocket): boolean {
+  /** Returns false (and the caller should close the socket) if at capacity.
+   * `socket` is the viewer's TCP socket, for egress accounting. */
+  addClient(ws: WebSocket, socket?: CountedSocket): boolean {
     if (this.clients.size >= this.maxClients) return false;
 
     this.clients.add(ws);
-    ws.on("close", () => this.clients.delete(ws));
-    ws.on("error", () => this.clients.delete(ws));
+    if (socket) this.sockets.set(ws, { socket, counted: socket.bytesWritten });
+    const remove = () => {
+      this.clients.delete(ws);
+      const s = this.sockets.get(ws);
+      if (s) {
+        this.closedUncounted += s.socket.bytesWritten - s.counted;
+        this.sockets.delete(ws);
+      }
+    };
+    ws.on("close", remove);
+    ws.on("error", remove);
     return true;
   }
 
+  /** Bytes written to this channel's viewers since the previous call. */
+  takeEgressBytes(): number {
+    let bytes = this.closedUncounted;
+    this.closedUncounted = 0;
+    for (const s of this.sockets.values()) {
+      const now = s.socket.bytesWritten;
+      bytes += now - s.counted;
+      s.counted = now;
+    }
+    return bytes;
+  }
+
   broadcast(data: string | Buffer): void {
-    const bytes = typeof data === "string" ? Buffer.byteLength(data) : data.length;
+    if (this.budget?.exhausted()) {
+      this.closeAllForBudget();
+      return;
+    }
     for (const client of this.clients) {
       if (client.readyState !== client.OPEN) continue;
 
@@ -82,10 +122,6 @@ export class ConnectionManager {
         continue; // drop this message for this client only — others are unaffected
       }
 
-      if (this.budget && !this.budget.trySpend(bytes)) {
-        this.closeAllForBudget();
-        return;
-      }
       client.send(data);
     }
   }

@@ -111,6 +111,38 @@ import type { WireHistogram } from "./types.js";
 // Wire form of a snapshot: the dense counts array (1,854 bins, nearly all
 // zero for a 10s bucket) replaced by its non-empty bins only. See
 // StatsFullMessage in types.ts for why this matters.
+// Same result as toWireHistogram(h.snapshot()), computed in one pass over
+// the typed array instead of first copying all 1,854 bins into a JS array
+// (snapshot()'s Array.from) and then scanning that. The relay builds these
+// for every bucket it sends; the copy was most of the cost. Percentiles use
+// snapshotFromCounts' exact rules (integer targets, "cumulative > target"),
+// which skipping empty bins can't change: cumulative only moves on a
+// non-empty bin, so that's the only place a target can be crossed.
+export function wireFromHistogram(h: Histogram): WireHistogram {
+  const counts = h.countsView;
+  const total = h.count;
+  const bins: [number, number][] = [];
+  let p50Ns = 0;
+  let p99Ns = 0;
+  let p999Ns = 0;
+  if (total > 0) {
+    const t50 = Math.floor((total * 50) / 100);
+    const t99 = Math.floor((total * 99) / 100);
+    const t999 = Math.floor((total * 999) / 1000);
+    let cumulative = 0;
+    for (let i = 0; i < counts.length; i++) {
+      const c = counts[i]!;
+      if (c === 0) continue;
+      bins.push([i, c]);
+      cumulative += c;
+      if (p50Ns === 0 && cumulative > t50) p50Ns = BUCKET_BOUNDARIES[i]!;
+      if (p99Ns === 0 && cumulative > t99) p99Ns = BUCKET_BOUNDARIES[i]!;
+      if (p999Ns === 0 && cumulative > t999) p999Ns = BUCKET_BOUNDARIES[i]!;
+    }
+  }
+  return { count: total, maxNs: total > 0 ? h.maxValueNs : 0, p50Ns, p99Ns, p999Ns, bins };
+}
+
 export function toWireHistogram(s: HistogramSnapshot): WireHistogram {
   const bins: [number, number][] = [];
   for (let i = 0; i < s.counts.length; i++) {

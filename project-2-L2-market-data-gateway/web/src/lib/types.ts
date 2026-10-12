@@ -171,10 +171,11 @@ export interface WireHistogram {
   bins: [number, number][];
 }
 
+// No inFrame: in-frame wait is excluded from every figure, and the relay
+// neither records nor sends it.
 export interface WireLatencyBucket {
   timestampMs: number;
   total: WireHistogram;
-  inFrame: WireHistogram;
   parse: WireHistogram;
   queue: WireHistogram;
   bookUpdate: WireHistogram;
@@ -343,9 +344,6 @@ export function sampleKey(tRecvTsc: number, batchIndex: number): string {
 export interface LatencyBucketSnapshot {
     timestampMs: number;
     total: HistogramSnapshot;
-    // Restored 2026-09-29 alongside SampleRecord.t_parse_begin — see that
-    // field's own comment and Engineering_Notes.md §11.6.
-    inFrame: HistogramSnapshot;
     parse: HistogramSnapshot;
     queue: HistogramSnapshot;
     bookUpdate: HistogramSnapshot;

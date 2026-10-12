@@ -225,8 +225,8 @@ test("stats: full history once on connect, then only changed buckets, sparse", a
     // All five recorded, then the pending change set consumed, so nothing is
     // owed to the viewer below beyond its stats_full.
     const stats = relay.registry.get("BTC")!.stats;
-    await waitFor(() => stats.snapshot().currentSession.count === 5, "samples recorded");
-    stats.takeUpdate();
+    await waitFor(() => stats.sessionSnapshot().count === 5, "samples recorded");
+    stats.takeUpdateJson();
 
     const viewer = open(viewerUrl(base, "BTC"));
     await waitFor(() => viewer.messages.some((m) => m.type === "stats_full"), "stats_full");
@@ -260,9 +260,11 @@ test("stats: full history once on connect, then only changed buckets, sparse", a
 });
 
 test("egress budget: once the day's budget is spent, viewers are cut off and refused", async () => {
-  // ~21KB budget: a trade is ~74 bytes on the wire, so ~280 of the 600
-  // below fit and the rest must not be sent.
-  const { relay, base, port } = await startRelay({ egressBudgetMBPerDay: 0.02 });
+  // ~5KB budget. 600 trades are ~8KB on the wire (compression shrinks a
+  // ~70-byte trade to ~14 bytes), so the burst crosses it. Egress is
+  // collected from the viewer sockets every egressCheckMs, so the cutoff
+  // lands within one collection of the budget being crossed.
+  const { relay, base, port } = await startRelay({ egressBudgetMBPerDay: 0.005, egressCheckMs: 50 });
   // A missing close must fail the test, not hang the suite.
   const within = <T,>(p: Promise<T>, label: string) =>
     Promise.race([p, new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`timed out: ${label}`)), 3_000))]);
@@ -272,9 +274,12 @@ test("egress budget: once the day's budget is spent, viewers are cut off and ref
     await waitFor(() => viewer.messages.some((m) => m.type === "stats_full"), "viewer onboarded");
 
     for (let i = 0; i < 600; i++) src.ws.send(JSON.stringify(trade(1_000 + i)));
+    // Nothing is sent after the cutoff: the trade below is never delivered.
+    await waitFor(() => viewer.messages.filter((m) => m.type === "trade").length === 600, "burst delivered");
+    await new Promise((r) => setTimeout(r, 150)); // > one collection interval
+    src.ws.send(JSON.stringify(trade(9_999)));
     assert.deepEqual(await within(viewer.closed, "viewer cut off"), { code: 1013, reason: "daily bandwidth budget reached" });
-    const delivered = viewer.messages.filter((m) => m.type === "trade").length;
-    assert.ok(delivered > 0 && delivered < 600, `some trades delivered before the cap, not all (${delivered})`);
+    assert.ok(!viewer.messages.some((m) => m.type === "trade" && m.price === 9_999), "nothing sent past the budget");
 
     // A new viewer the same day is refused outright.
     assert.deepEqual(await within(open(viewerUrl(base, "BTC")).closed, "new viewer refused"), {
@@ -286,8 +291,8 @@ test("egress budget: once the day's budget is spent, viewers are cut off and ref
     const health = (await (await fetch(`http://127.0.0.1:${port}/health`)).json()) as {
       egress: { sentTodayMB: number; budgetMB: number };
     };
-    assert.equal(health.egress.budgetMB, 0.02);
-    assert.ok(health.egress.sentTodayMB >= 0.01);
+    assert.equal(health.egress.budgetMB, 0.01); // 0.005MB, shown to 2 decimals
+    assert.ok(health.egress.sentTodayMB >= 0.005);
   } finally {
     await relay.close();
   }

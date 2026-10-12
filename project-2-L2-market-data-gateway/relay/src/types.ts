@@ -3,7 +3,6 @@
 // gzprintf format strings so a payload can be parsed identically whether it
 // came from a live gateway push or a replayed session file.
 
-import type { HistogramSnapshot } from "./histogram.js";
 
 export type Side = "bid" | "ask" | "both" | "none";
 
@@ -155,31 +154,12 @@ export function isHelloMessage(value: unknown): value is HelloMessage {
   return (value as { type: unknown }).type === "hello";
 }
 
-export interface LatencyBucketSnapshot {
-  timestampMs: number;
-  total: HistogramSnapshot;
-  // Restored 2026-09-29 alongside SampleRecord.t_parse_begin — see that
-  // field's own comment and Engineering_Notes.md §11.6.
-  inFrame: HistogramSnapshot;
-  parse: HistogramSnapshot;
-  queue: HistogramSnapshot;
-  bookUpdate: HistogramSnapshot;
-  publish: HistogramSnapshot;
-}
-
-export interface StatsMessage {
-  type: "stats";
-  rollingWindow: HistogramSnapshot;
-  currentSession: HistogramSnapshot;
-  latencyBuckets: LatencyBucketSnapshot[];
-}
-
 // ---- Stats on the wire to viewers ------------------------------------------
 //
-// Sending StatsMessage itself every second was the relay's biggest bug: it
-// carries the whole retained hour (360 buckets x 6 stages), each histogram as
-// a dense 1,854-bin `counts` array that is almost all zeros -- 8.2MB per
-// message, per viewer, per second. Far more than a viewer's connection can
+// The relay used to send a "stats" message every second carrying the whole
+// retained hour (360 buckets x 6 stages), each histogram as a dense 1,854-bin
+// `counts` array that is almost all zeros -- 8.2MB per message, per viewer,
+// per second (see the incident write-up in the project README). Far more than a viewer's connection can
 // drain, so ConnectionManager's slow-client guard started dropping that
 // viewer's trades and snapshots, and every message queued behind megabytes
 // of stats. Two changes fix it:
@@ -198,10 +178,11 @@ export interface WireHistogram {
   bins: [number, number][];
 }
 
+// No inFrame: in-frame wait is excluded from every reported figure, so it's
+// neither recorded nor sent.
 export interface WireLatencyBucket {
   timestampMs: number;
   total: WireHistogram;
-  inFrame: WireHistogram;
   parse: WireHistogram;
   queue: WireHistogram;
   bookUpdate: WireHistogram;

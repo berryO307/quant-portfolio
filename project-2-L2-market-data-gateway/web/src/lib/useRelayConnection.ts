@@ -27,7 +27,6 @@ function bucketFromWire(b: WireLatencyBucket, binCount: number): LatencyBucketSn
   return {
     timestampMs: b.timestampMs,
     total: fromWire(b.total, binCount),
-    inFrame: fromWire(b.inFrame, binCount),
     parse: fromWire(b.parse, binCount),
     queue: fromWire(b.queue, binCount),
     bookUpdate: fromWire(b.bookUpdate, binCount),
