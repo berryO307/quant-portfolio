@@ -26,6 +26,10 @@ const relay = createRelay({
   corsOrigins,
   maxClients: Number(process.env.MAX_CLIENTS ?? 500),
   maxChannels: Number(process.env.MAX_CHANNELS ?? 256),
+  // 1024MB/day = at most ~$0.05/day of egress at $0.05/GB, ~$1.55/month,
+  // whatever goes wrong. A viewer costs ~8KB/s, so that is ~35 viewer-hours
+  // a day. 0 = no cap (not recommended on metered hosting).
+  egressBudgetMBPerDay: Number(process.env.EGRESS_BUDGET_MB_PER_DAY ?? 1024),
   ingestToken: process.env.INGEST_TOKEN, // undefined = open /ingest, the local-dev default
   symbols,
   statsIntervalMs: 1_000, // same cadence as the gateway's terminal progress view

@@ -1,4 +1,5 @@
 import type { WebSocket } from "ws";
+import { BUDGET_CLOSE_CODE, BUDGET_CLOSE_REASON, type EgressBudget } from "./egressBudget.js";
 
 const DEFAULT_MAX_CLIENTS = 500;
 
@@ -23,7 +24,29 @@ export class ConnectionManager {
   private clients = new Set<WebSocket>();
   private droppedMessages = 0;
 
-  constructor(private readonly maxClients: number = DEFAULT_MAX_CLIENTS) {}
+  constructor(
+    private readonly maxClients: number = DEFAULT_MAX_CLIENTS,
+    // Shared by every channel: the cap is on the relay's total egress.
+    private readonly budget?: EgressBudget
+  ) {}
+
+  /** Sends to one viewer, counted against the egress budget. Returns false
+   * (and has disconnected every viewer) once today's budget is spent. */
+  send(ws: WebSocket, data: string): boolean {
+    if (this.budget && !this.budget.trySpend(Buffer.byteLength(data))) {
+      this.closeAllForBudget();
+      return false;
+    }
+    ws.send(data);
+    return true;
+  }
+
+  // Budget spent: end every viewer's stream with a reason the browser can
+  // show, rather than leaving sockets open that will never get data.
+  private closeAllForBudget(): void {
+    for (const client of this.clients) client.close(BUDGET_CLOSE_CODE, BUDGET_CLOSE_REASON);
+    this.clients.clear();
+  }
 
   get size(): number {
     return this.clients.size;
@@ -44,6 +67,7 @@ export class ConnectionManager {
   }
 
   broadcast(data: string | Buffer): void {
+    const bytes = typeof data === "string" ? Buffer.byteLength(data) : data.length;
     for (const client of this.clients) {
       if (client.readyState !== client.OPEN) continue;
 
@@ -58,6 +82,10 @@ export class ConnectionManager {
         continue; // drop this message for this client only — others are unaffected
       }
 
+      if (this.budget && !this.budget.trySpend(bytes)) {
+        this.closeAllForBudget();
+        return;
+      }
       client.send(data);
     }
   }

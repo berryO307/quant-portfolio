@@ -94,6 +94,9 @@ export class RollingStatsAggregator {
   // Bucket ids that received samples since the last takeUpdate(): the only
   // ones a viewer that already has the history needs again.
   private dirty = new Set<number>();
+  // Cumulative gateway ring-buffer drops, as of the newest sample. Viewers
+  // used to read it off the raw samples, which they no longer receive.
+  private queueOverflowDropped = 0;
 
   constructor(private readonly source: DataSource) {
     this.source.on("record", this.handleRecord);
@@ -102,11 +105,13 @@ export class RollingStatsAggregator {
 
   private handleConnected = (): void => {
     this.sessionHistogram = new Histogram();
+    this.queueOverflowDropped = 0; // a session counter, like the histogram above
   };
 
   private handleRecord = (record: IngestRecord): void => {
     if (record.type !== "sample") return;
     if (record.t_pop === undefined) return;
+    if (record.queue_overflow_dropped !== undefined) this.queueOverflowDropped = record.queue_overflow_dropped;
 
     const cpuGhz = this.source.cpuGhz();
     // t_parse_begin falls back to t_recv for a pre-existing gateway/relay
@@ -218,11 +223,10 @@ export class RollingStatsAggregator {
     return {
       type: "stats_full",
       binCount: BUCKET_BOUNDARIES.length,
-      rollingWindow: toWireHistogram(this.rollingSnapshot()),
-      currentSession: toWireHistogram(this.sessionHistogram.snapshot()),
       latencyBuckets: [...this.buckets.values()]
         .sort((a, b) => a.timestampMs - b.timestampMs)
         .map((bucket) => this.wireBucket(bucket)),
+      queueOverflowDropped: this.queueOverflowDropped,
     };
   }
 
@@ -240,10 +244,9 @@ export class RollingStatsAggregator {
     return {
       type: "stats_update",
       binCount: BUCKET_BOUNDARIES.length,
-      rollingWindow: toWireHistogram(this.rollingSnapshot()),
-      currentSession: toWireHistogram(this.sessionHistogram.snapshot()),
       latencyBuckets: changed.map((bucket) => this.wireBucket(bucket)),
       oldestTimestampMs: Number.isFinite(oldest) ? oldest : 0,
+      queueOverflowDropped: this.queueOverflowDropped,
     };
   }
 

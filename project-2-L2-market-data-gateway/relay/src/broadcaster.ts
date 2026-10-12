@@ -42,6 +42,12 @@ export class Broadcaster {
   }
 
   private handleRecord = (record: IngestRecord): void => {
+    // Per-tick latency samples stay inside the relay: RollingStatsAggregator
+    // turns them into the stats viewers actually chart, and the one field
+    // the dashboard read from raw samples (queue_overflow_dropped) now rides
+    // in the stats messages. Streaming every sample to every viewer was
+    // ~18% of a viewer's bandwidth for nothing, and bandwidth is billed.
+    if (record.type === "sample") return;
     const payload = JSON.stringify(record);
     if (record.type === "snapshot") {
       this.latestSnapshot = payload;
