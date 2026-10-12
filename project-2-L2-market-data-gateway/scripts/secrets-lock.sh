@@ -32,10 +32,10 @@ out="$src.enc"
 [ -e "$out" ] && { echo "$out already exists; delete it first if you mean to re-encrypt" >&2; exit 1; }
 command -v openssl >/dev/null || { echo "openssl not found (it ships with Git for Windows; run this from Git Bash)" >&2; exit 1; }
 
-read -rs -p "New passphrase (12+ characters, not one you use elsewhere): " p1; echo
+read -rs -p "New passphrase (8+ characters): " p1; echo
 read -rs -p "Repeat it: " p2; echo
 [ "$p1" = "$p2" ] || { echo "the two entries differ; nothing changed" >&2; exit 1; }
-[ ${#p1} -ge 12 ] || { echo "use at least 12 characters; nothing changed" >&2; exit 1; }
+[ ${#p1} -ge 8 ] || { echo "use at least 8 characters; nothing changed" >&2; exit 1; }
 
 # Passphrase via stdin (-pass stdin), never on a command line where other
 # processes could list it.
