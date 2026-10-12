@@ -1,6 +1,7 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 import { ChannelRegistry } from "./channel.js";
+import type { CountedSocket } from "./connectionManager.js";
 import { BUDGET_CLOSE_CODE, BUDGET_CLOSE_REASON, EgressBudget } from "./egressBudget.js";
 import { isHelloMessage } from "./types.js";
 
@@ -22,6 +23,9 @@ export interface RelayConfig {
   /** Hard cap on bytes sent to viewers per UTC day (see EgressBudget).
    * 0 or omitted = no cap. */
   egressBudgetMBPerDay?: number;
+  /** How often viewer egress is collected and checked against the budget
+   * (default 1000ms). */
+  egressCheckMs?: number;
 }
 
 export interface Relay {
@@ -52,7 +56,9 @@ export function createRelay(config: RelayConfig): Relay {
   // WHY it has no data. /stats, the one large body, checks the budget
   // itself below.
   function sendJson(res: ServerResponse, status: number, body: unknown): void {
-    const text = JSON.stringify(body);
+    sendJsonText(res, status, JSON.stringify(body));
+  }
+  function sendJsonText(res: ServerResponse, status: number, text: string): void {
     budget.record(Buffer.byteLength(text));
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(text);
@@ -115,7 +121,7 @@ export function createRelay(config: RelayConfig): Relay {
           sendJson(res, 503, { error: BUDGET_CLOSE_REASON, egress: budget.summary() });
           return;
         }
-        sendJson(res, 200, channel.stats.fullMessage()); // sparse, same as a viewer's stats_full
+        sendJsonText(res, 200, channel.stats.fullMessageJson()); // same body a new viewer gets as stats_full
         return;
       }
 
@@ -137,15 +143,16 @@ export function createRelay(config: RelayConfig): Relay {
   // billed, and compressing there would only spend CPU.
   //
   // Bounded memory per viewer: a 4KB window (serverMaxWindowBits 12) and
-  // memLevel 7 keep each viewer's compressor around 80KB. Messages under
-  // 256 bytes aren't worth compressing and go out as they are.
+  // memLevel 7 keep each viewer's compressor around 80KB. The compressor
+  // keeps its window between messages (context takeover), so ws compresses
+  // every message, and even small ones shrink a lot: measured, a ~70-byte
+  // trade goes out as ~14 bytes once the compressor has seen a few.
   const wssLive = new WebSocketServer({
     noServer: true,
     clientTracking: false,
     perMessageDeflate: {
       zlibDeflateOptions: { memLevel: 7 },
       serverMaxWindowBits: 12,
-      threshold: 256,
     },
   });
 
@@ -233,7 +240,7 @@ export function createRelay(config: RelayConfig): Relay {
           ws.close(BUDGET_CLOSE_CODE, BUDGET_CLOSE_REASON);
           return;
         }
-        if (registry.totalViewers() >= config.maxClients || !channel.clients.addClient(ws)) {
+        if (registry.totalViewers() >= config.maxClients || !channel.clients.addClient(ws, socket as unknown as CountedSocket)) {
           ws.close(1013, "relay at capacity");
           return;
         }
@@ -254,14 +261,20 @@ export function createRelay(config: RelayConfig): Relay {
   // every tick: 8.2MB per viewer per second, which overflowed every
   // viewer's connection and made the relay drop their trades and books.
   // A viewer gets the full history once, on connect (Channel.addViewer).
+  // What viewers were actually sent (compressed, from their sockets), into
+  // the daily budget. Once over, the next send to any viewer closes them all.
+  const egressTimer = setInterval(() => {
+    for (const channel of registry.all()) budget.record(channel.clients.takeEgressBytes());
+  }, config.egressCheckMs ?? 1_000);
+
   const statsTimer = setInterval(() => {
     for (const channel of registry.all()) {
       if (channel.clients.size === 0) {
         channel.stats.clearUpdate();
         continue;
       }
-      const update = channel.stats.takeUpdate();
-      if (update) channel.clients.broadcast(JSON.stringify(update));
+      const update = channel.stats.takeUpdateJson();
+      if (update) channel.clients.broadcast(update);
     }
   }, config.statsIntervalMs);
 
@@ -271,6 +284,7 @@ export function createRelay(config: RelayConfig): Relay {
     close: () =>
       new Promise((resolve) => {
         clearInterval(statsTimer);
+        clearInterval(egressTimer);
         for (const ws of sockets) ws.terminate();
         server.closeAllConnections();
         server.close(() => resolve());

@@ -9,10 +9,12 @@
 // money either: once today's budget is spent, the relay stops streaming to
 // viewers until the next UTC day instead of billing more.
 //
-// Counted: every payload sent to a viewer (WebSocket messages, and HTTP
-// response bodies). Not counted: frame/TLS/TCP overhead -- a few percent --
-// and traffic to data sources on /ingest, which is ingress and not billed.
-// So the real bill can run slightly above the cap, never far above it.
+// Counted: bytes actually written to viewers' sockets (after WebSocket
+// compression, frame headers included; collected once a second, so the cap
+// can be overshot by at most a second of traffic), plus HTTP response
+// bodies. Not counted: TLS and TCP/IP overhead, added by Railway's edge --
+// a few percent -- and traffic from data sources on /ingest, which is
+// ingress and not billed.
 const DAY_MS = 86_400_000;
 
 export class EgressBudget {
@@ -30,16 +32,7 @@ export class EgressBudget {
     }
   }
 
-  /** Counts `bytes` against today's budget. Returns false, counting
-   * nothing, if they don't fit: the caller must not send them. */
-  trySpend(bytes: number): boolean {
-    this.rollover();
-    if (this.budgetBytes > 0 && this.sent + bytes > this.budgetBytes) return false;
-    this.sent += bytes;
-    return true;
-  }
-
-  /** Counts bytes that are sent regardless (tiny health responses). */
+  /** Counts bytes that have been sent. */
   record(bytes: number): void {
     this.rollover();
     this.sent += bytes;
