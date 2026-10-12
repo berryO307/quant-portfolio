@@ -115,7 +115,7 @@ To refresh what the public dashboard replays:
    ```bash
    bash scripts/secrets-lock.sh deploy/neon.env   # writes deploy/neon.env.enc, verifies it, offers to delete the plaintext
    ```
-   AES-256-CBC with a PBKDF2-SHA256 key (600,000 iterations) via OpenSSL, which ships with Git for Windows. The passphrase is read without echo and passed on stdin, never on a command line.
+   AES-256-CBC with a PBKDF2-SHA256 key (600,000 iterations) via OpenSSL, which ships with Git for Windows. The passphrase is read without echo and passed on stdin, never on a command line. `bash scripts/secrets-unlock.sh deploy/neon.env.enc` reverses it (to go back to plaintext, or to re-lock with a different passphrase).
 3. Upload, replacing each symbol's previous session in the same transaction:
    ```bash
    bash scripts/neon-upload.sh --cpu-ghz=3.80001 \
