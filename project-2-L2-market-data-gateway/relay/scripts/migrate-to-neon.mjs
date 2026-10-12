@@ -15,7 +15,11 @@
 // data is queryable from Neon.
 //
 // Usage:
-//   DATABASE_URL=postgres://... node scripts/migrate-to-neon.mjs <session.ndjson.gz> --symbol=<SYM> --cpu-ghz=<GHZ>
+//   DATABASE_URL=postgres://... node scripts/migrate-to-neon.mjs <session.ndjson.gz> --symbol=<SYM> --cpu-ghz=<GHZ> [--replace]
+//
+// --replace deletes the symbol's other sessions in the same transaction,
+// so the replay (which picks the latest session) has exactly one to load
+// and Neon's storage doesn't grow with every refresh.
 //
 // --cpu-ghz is required for the same reason replay-gateway.mjs requires it
 // today: it's calibrated per-capture (quant_day1.exe's "Calibrated Host TSC
@@ -37,10 +41,12 @@ const cpuGhzArg = args.find((a) => a.startsWith("--cpu-ghz="));
 const filePath = args.find((a) => !a.startsWith("--"));
 const SYMBOL = symbolArg?.slice("--symbol=".length);
 const CPU_GHZ = cpuGhzArg ? Number(cpuGhzArg.slice("--cpu-ghz=".length)) : undefined;
+// Delete every other session for this symbol once the load succeeds.
+const REPLACE = args.includes("--replace");
 
 if (!filePath || !SYMBOL || !CPU_GHZ || !process.env.DATABASE_URL) {
   console.error(
-    "usage: DATABASE_URL=postgres://... node scripts/migrate-to-neon.mjs <session.ndjson.gz> --symbol=<SYM> --cpu-ghz=<GHZ>"
+    "usage: DATABASE_URL=postgres://... node scripts/migrate-to-neon.mjs <session.ndjson.gz> --symbol=<SYM> --cpu-ghz=<GHZ> [--replace]"
   );
   process.exit(1);
 }
@@ -195,10 +201,23 @@ async function main() {
     await insertBatch(client, sessionId, batch);
 
     await client.query("UPDATE sessions SET record_count = $1 WHERE id = $2", [seq, sessionId]);
+
+    // --replace: this becomes the symbol's only session. Inside the same
+    // transaction as the load, so a failed load deletes nothing; ticks go
+    // with their session (ON DELETE CASCADE in schema.sql). This is the
+    // cleanup step instead of a scheduled job: old sessions only become
+    // stale when a new one arrives, and a cron service would itself be one
+    // more thing billed for running.
+    let replaced = 0;
+    if (REPLACE) {
+      const old = await client.query("DELETE FROM sessions WHERE symbol = $1 AND id <> $2", [SYMBOL, sessionId]);
+      replaced = old.rowCount ?? 0;
+    }
     await client.query("COMMIT");
 
     console.log(
-      `[migrate] loaded ${seq} ticks into session ${sessionId}${skipped > 0 ? ` (skipped ${skipped} unrecognized records)` : ""}`
+      `[migrate] loaded ${seq} ticks into session ${sessionId}${skipped > 0 ? ` (skipped ${skipped} unrecognized records)` : ""}` +
+        (REPLACE ? `; deleted ${replaced} older ${SYMBOL} session(s)` : "")
     );
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});

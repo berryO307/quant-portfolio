@@ -129,6 +129,26 @@ export function createRelay(config: RelayConfig): Relay {
   // channels already track their own sockets.
   const wss = new WebSocketServer({ noServer: true, clientTracking: false });
 
+  // Viewers (/live) get their own server with permessage-deflate: the
+  // standard WebSocket compression every browser negotiates by itself, no
+  // client code involved. The stream is JSON numbers with repeated keys,
+  // and egress is billed per byte. Kept off /ingest (`wss` above): data
+  // sources are on localhost or the operator's own link, ingress isn't
+  // billed, and compressing there would only spend CPU.
+  //
+  // Bounded memory per viewer: a 4KB window (serverMaxWindowBits 12) and
+  // memLevel 7 keep each viewer's compressor around 80KB. Messages under
+  // 256 bytes aren't worth compressing and go out as they are.
+  const wssLive = new WebSocketServer({
+    noServer: true,
+    clientTracking: false,
+    perMessageDeflate: {
+      zlibDeflateOptions: { memLevel: 7 },
+      serverMaxWindowBits: 12,
+      threshold: 256,
+    },
+  });
+
   // Every upgraded socket, so close() can end them. An upgraded socket is
   // no longer one of the HTTP server's connections: server.close() alone
   // would wait on them forever, and each attached feed's heartbeat timer
@@ -200,7 +220,7 @@ export function createRelay(config: RelayConfig): Relay {
     if (url.pathname === "/live") {
       const symbol = url.searchParams.get("symbol");
       const channel = symbol === null ? undefined : registry.get(symbol);
-      wss.handleUpgrade(req, socket, head, (ws) => {
+      wssLive.handleUpgrade(req, socket, head, (ws) => {
         track(ws);
         // Upgrade first, then close with a reason: the reason shows up in
         // the browser's close event / devtools, where a refused HTTP

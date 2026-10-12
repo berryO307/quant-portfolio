@@ -328,9 +328,8 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
           statsBucketsRef.current = buckets;
           setStats({
             type: "stats",
-            rollingWindow: fromWire(parsed.rollingWindow, parsed.binCount),
-            currentSession: fromWire(parsed.currentSession, parsed.binCount),
             latencyBuckets: [...buckets.values()],
+            queueOverflowDropped: parsed.queueOverflowDropped,
           });
           break;
         }
@@ -341,9 +340,8 @@ export function useRelayConnection(wsUrl: string, healthUrl: string, expectedSym
           for (const ts of buckets.keys()) if (ts < parsed.oldestTimestampMs) buckets.delete(ts);
           setStats({
             type: "stats",
-            rollingWindow: fromWire(parsed.rollingWindow, parsed.binCount),
-            currentSession: fromWire(parsed.currentSession, parsed.binCount),
             latencyBuckets: [...buckets.values()].sort((a, b) => a.timestampMs - b.timestampMs),
+            queueOverflowDropped: parsed.queueOverflowDropped,
           });
           break;
         }

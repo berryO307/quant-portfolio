@@ -120,9 +120,11 @@ export interface StatsMessage {
   // duration — this field used to be called rolling12h, which quietly went
   // wrong the moment the relay's actual retention shrank to 1 hour (see
   // rollingStatsAggregator.ts) without the name changing to match.
-  rollingWindow: HistogramSnapshot;
-  currentSession: HistogramSnapshot;
+  rollingWindow?: HistogramSnapshot;
+  currentSession?: HistogramSnapshot;
   latencyBuckets?: LatencyBucketSnapshot[];
+  // Gateway ring-buffer drops this session (see FeedStatusBanner).
+  queueOverflowDropped?: number;
 }
 
 // Rebroadcast by the relay to every browser client whenever the upstream
@@ -179,21 +181,22 @@ export interface WireLatencyBucket {
   publish: WireHistogram;
 }
 
+// rollingWindow/currentSession were dropped from the wire (nothing here
+// charts them); queueOverflowDropped replaces reading it off raw samples,
+// which the relay no longer streams. Optional so an older relay still parses.
 export interface StatsFullMessage {
   type: "stats_full";
   binCount: number;
-  rollingWindow: WireHistogram;
-  currentSession: WireHistogram;
   latencyBuckets: WireLatencyBucket[];
+  queueOverflowDropped?: number;
 }
 
 export interface StatsUpdateMessage {
   type: "stats_update";
   binCount: number;
-  rollingWindow: WireHistogram;
-  currentSession: WireHistogram;
   latencyBuckets: WireLatencyBucket[];
   oldestTimestampMs: number;
+  queueOverflowDropped?: number;
 }
 
 export type RelayMessage =

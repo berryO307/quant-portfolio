@@ -306,3 +306,29 @@ test("egress budget: 0 means no cap", async () => {
     await relay.close();
   }
 });
+
+test("viewers get compressed frames, no raw samples, and the overflow count in stats", async () => {
+  const { relay, base } = await startRelay({ statsIntervalMs: 100 });
+  try {
+    const src = await feed(base, relay, "BTC");
+    const viewer = open(viewerUrl(base, "BTC"));
+    await viewer.opened;
+    assert.match(viewer.ws.extensions, /permessage-deflate/, "browser-standard compression negotiated on /live");
+    await waitFor(() => viewer.messages.some((m) => m.type === "stats_full"), "stats_full");
+
+    src.ws.send(JSON.stringify({
+      type: "sample", t_recv: 1_000, t_parse_begin: 1_000, t_parse: 4_000, t_pop: 5_000, t_book: 6_000, t_publish: 7_000,
+      batch_index: 0, batch_size: 1, queue_overflow_dropped: 3,
+    }));
+    src.ws.send(JSON.stringify(trade(100)));
+    await waitFor(() => viewer.messages.some((m) => m.type === "stats_update"), "stats_update");
+    await waitFor(() => viewer.messages.some((m) => m.type === "trade"), "trade");
+
+    assert.ok(viewer.messages.every((m) => m.type !== "sample"), "samples are consumed by the relay, not streamed");
+    const update = viewer.messages.find((m) => m.type === "stats_update") as { queueOverflowDropped: number };
+    assert.equal(update.queueOverflowDropped, 3);
+    assert.ok(!("rollingWindow" in update) && !("currentSession" in update), "unused whole-window histograms not sent");
+  } finally {
+    await relay.close();
+  }
+});

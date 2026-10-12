@@ -141,7 +141,9 @@ export function Dashboard({ instrument }: { instrument: InstrumentConfig }) {
   // Cumulative, not per-tick — the newest sample carries the current
   // session total (see LiveSample's own comment). recentSamples is
   // chronological (oldest first), so the newest is the last element.
-  const queueOverflowDropped = recentSamples.at(-1)?.queueOverflowDropped ?? 0;
+  // The relay now carries this in its stats messages (it no longer streams
+  // raw samples to viewers); recentSamples is the fallback for an older relay.
+  const queueOverflowDropped = stats?.queueOverflowDropped ?? recentSamples.at(-1)?.queueOverflowDropped ?? 0;
 
   // h-full, not h-screen: this now renders inside the app shell's main
   // region (below the top bar, beside the sidebar), so a full-viewport

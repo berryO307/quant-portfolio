@@ -208,23 +208,28 @@ export interface WireLatencyBucket {
   publish: WireHistogram;
 }
 
+// No rollingWindow/currentSession histograms in either message: the
+// dashboard charts per-bucket data only, and those two whole-window
+// histograms were re-sent every second unread. Dropping them roughly halved
+// a stats update.
+
 /** Sent once, to a viewer that just connected: everything retained. */
 export interface StatsFullMessage {
   type: "stats_full";
   /** Histogram bin count, so the client can rebuild dense counts. */
   binCount: number;
-  rollingWindow: WireHistogram;
-  currentSession: WireHistogram;
   latencyBuckets: WireLatencyBucket[];
+  /** Gateway-side ring-buffer drops this session, from the newest sample
+   * (viewers no longer receive raw samples to read it from). */
+  queueOverflowDropped: number;
 }
 
 /** Sent every stats tick: only buckets that changed since the last one. */
 export interface StatsUpdateMessage {
   type: "stats_update";
   binCount: number;
-  rollingWindow: WireHistogram;
-  currentSession: WireHistogram;
   latencyBuckets: WireLatencyBucket[];
   /** Buckets older than this were evicted; the client drops them too. */
   oldestTimestampMs: number;
+  queueOverflowDropped: number;
 }
